@@ -11,6 +11,9 @@
 - ⚡ 工具参数自动转换
 - 🖥️ 支持 WebUI 配置（包括服务器列表）
 
+- <img width="3012" height="1794" alt="image" src="https://github.com/user-attachments/assets/ece56404-301a-4abf-b16d-87bd430fc977" />
+
+
 ## 安装
 
 ### 1. 克隆插件到 MaiBot 插件目录
