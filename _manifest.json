@@ -11,6 +11,8 @@
   "host_application": {
     "min_version": "0.11.6"
   },
+  "homepage_url": "https://github.com/CharTyr/MaiBot_MCPBridgePlugin",
+  "repository_url": "https://github.com/CharTyr/MaiBot_MCPBridgePlugin",
   "keywords": [
     "mcp",
     "bridge",
