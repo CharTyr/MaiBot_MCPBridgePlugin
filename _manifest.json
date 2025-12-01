@@ -1,0 +1,33 @@
+{
+  "manifest_version": 1,
+  "name": "MCP桥接插件",
+  "version": "1.0.0",
+  "description": "将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具",
+  "author": {
+    "name": "CharTyr",
+    "url": "https://github.com/CharTyr"
+  },
+  "license": "GPL-v3.0-or-later",
+  "host_application": {
+    "min_version": "0.11.6"
+  },
+  "keywords": [
+    "mcp",
+    "bridge",
+    "tool",
+    "integration"
+  ],
+  "default_locale": "zh-CN",
+  "plugin_info": {
+    "is_built_in": false,
+    "components": [],
+    "features": [
+      "支持多个 MCP 服务器",
+      "自动发现并注册 MCP 工具",
+      "支持 stdio 和 HTTP 传输方式",
+      "工具参数自动转换",
+      "连接状态监控与自动重连"
+    ]
+  },
+  "id": "MaiBot Community.MCPBridgePlugin"
+}
