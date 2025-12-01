@@ -13,33 +13,29 @@
 
 ## 安装
 
-### 1. 安装依赖
+### 1. 克隆插件到 MaiBot 插件目录
+
+```bash
+cd /path/to/MaiBot/plugins
+git clone https://github.com/CharTyr/MaiBot_MCPBridgePlugin.git MCPBridgePlugin
+```
+
+### 2. 安装依赖
 
 ```bash
 pip install mcp
 ```
 
-### 2. 配置插件
+### 3. 配置插件
 
-编辑 `plugins/MCPBridgePlugin/config.toml`：
+复制示例配置文件：
 
-```toml
-[plugin]
-enabled = true
-
-[settings]
-tool_prefix = "mcp"
-call_timeout = 60.0
-auto_connect = true
-
-# 添加你的 MCP 服务器
-[[servers]]
-name = "filesystem"
-enabled = true
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"]
+```bash
+cd MCPBridgePlugin
+cp config.example.toml config.toml
 ```
+
+然后编辑 `config.toml`，添加你的 MCP 服务器配置。
 
 ## 配置说明
 
@@ -83,9 +79,23 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"]
 | `retry_attempts` | int | 3 | 连接失败重试次数 | ✅ |
 | `retry_interval` | float | 5.0 | 重试间隔（秒） | ✅ |
 
-### 服务器配置 `[[servers]]`
+### 服务器配置
 
-每个服务器使用 `[[servers]]` 数组格式配置（或在 WebUI 中使用 JSON 格式）：
+在 `config.toml` 中使用 JSON 格式配置服务器列表：
+
+```toml
+[servers]
+list = '''
+[
+  {
+    "name": "howtocook",
+    "enabled": true,
+    "transport": "http",
+    "url": "https://mcp.api-inference.modelscope.net/c9b55951d4ed47/mcp"
+  }
+]
+'''
+```
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
@@ -94,77 +104,43 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"]
 | `transport` | string | 传输方式：`stdio`、`sse` 或 `http` |
 | `command` | string | (stdio) 启动命令 |
 | `args` | array | (stdio) 命令参数 |
-| `env` | table | (stdio) 环境变量 |
+| `env` | object | (stdio) 环境变量 |
 | `url` | string | (sse/http) 服务器 URL |
 
 ## 配置示例
 
-### 示例 1: 文件系统 MCP 服务器
+### HTTP 方式（推荐用于远程服务器）
 
-```toml
-[[servers]]
-name = "filesystem"
-enabled = true
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+```json
+{
+  "name": "howtocook",
+  "enabled": true,
+  "transport": "http",
+  "url": "https://mcp.api-inference.modelscope.net/c9b55951d4ed47/mcp"
+}
 ```
 
-### 示例 2: 使用 uvx 运行 Python MCP 服务器
+### stdio 方式（用于本地 MCP 服务器）
 
-```toml
-[[servers]]
-name = "aws-docs"
-enabled = true
-transport = "stdio"
-command = "uvx"
-args = ["awslabs.aws-documentation-mcp-server@latest"]
-env = { "FASTMCP_LOG_LEVEL" = "ERROR" }
+```json
+{
+  "name": "filesystem",
+  "enabled": true,
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+}
 ```
 
-### 示例 3: HTTP 方式连接
+### SSE 方式
 
-```toml
-[[servers]]
-name = "remote-tools"
-enabled = true
-transport = "http"
-url = "https://example.com/mcp/"
-```
-
-### 示例 4: SSE 方式连接
-
-```toml
-[[servers]]
-name = "my-sse-server"
-enabled = true
-transport = "sse"
-url = "http://localhost:8080/sse"
-```
-
-### 示例 5: 多个服务器
-
-```toml
-[[servers]]
-name = "filesystem"
-enabled = true
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
-
-[[servers]]
-name = "github"
-enabled = true
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-github"]
-env = { "GITHUB_PERSONAL_ACCESS_TOKEN" = "your-token-here" }
-
-[[servers]]
-name = "web-search"
-enabled = false  # 暂时禁用
-transport = "http"
-url = "https://search-mcp.example.com/"
+```json
+{
+  "name": "my-sse-server",
+  "enabled": true,
+  "transport": "sse",
+  "url": "http://localhost:8080/sse"
+}
 ```
 
 ## 工具命名规则
@@ -175,12 +151,7 @@ MCP 工具在 MaiBot 中的名称格式为：
 {tool_prefix}_{server_name}_{original_tool_name}
 ```
 
-例如，如果配置了：
-- `tool_prefix = "mcp"`
-- 服务器名称为 `filesystem`
-- MCP 工具原名为 `read_file`
-
-则在 MaiBot 中的工具名称为：`mcp_filesystem_read_file`
+例如：`mcp_howtocook_whatToEat`
 
 ## 工作原理
 
@@ -205,7 +176,7 @@ MCP 工具在 MaiBot 中的名称格式为：
 
 查看 MaiBot 日志，插件会输出类似：
 ```
-注册 MCP 工具: mcp_filesystem_read_file
+✅ 注册 MCP 工具: mcp_howtocook_whatToEat
 ```
 
 ### Q: 工具调用超时怎么办？
@@ -216,12 +187,13 @@ MCP 工具在 MaiBot 中的名称格式为：
 
 ### HowToCook 菜谱服务器
 
-```toml
-[[servers]]
-name = "howtocook"
-enabled = true
-transport = "http"
-url = "https://mcp.api-inference.modelscope.net/c9b55951d4ed47/mcp"
+```json
+{
+  "name": "howtocook",
+  "enabled": true,
+  "transport": "http",
+  "url": "https://mcp.api-inference.modelscope.net/xxxxx"
+}
 ```
 
 提供的工具：
@@ -233,6 +205,7 @@ url = "https://mcp.api-inference.modelscope.net/c9b55951d4ed47/mcp"
 
 ## 依赖
 
+- MaiBot >= 0.11.6
 - Python >= 3.10
 - mcp >= 1.0.0
 
