@@ -55,7 +55,7 @@ cp config.example.toml config.toml
     "name": "howtocook",
     "enabled": true,
     "transport": "http",
-    "url": "https://mcp.api-inference.modelscope.net/c9b55951d4ed47/mcp"
+    "url": "https://mcp.api-inference.modelscope.net/今天吃什么/mcp"
   },
   {
     "name": "filesystem",
@@ -91,7 +91,7 @@ list = '''
     "name": "howtocook",
     "enabled": true,
     "transport": "http",
-    "url": "https://mcp.api-inference.modelscope.net/c9b55951d4ed47/mcp"
+    "url": "https://mcp.api-inference.modelscope.net/今天吃什么/mcp"
   }
 ]
 '''
@@ -116,7 +116,7 @@ list = '''
   "name": "howtocook",
   "enabled": true,
   "transport": "http",
-  "url": "https://mcp.api-inference.modelscope.net/c9b55951d4ed47/mcp"
+  "url": "https://mcp.api-inference.modelscope.net/今天吃什么/mcp"
 }
 ```
 
@@ -192,7 +192,7 @@ MCP 工具在 MaiBot 中的名称格式为：
   "name": "howtocook",
   "enabled": true,
   "transport": "http",
-  "url": "https://mcp.api-inference.modelscope.net/xxxxx"
+  "url": "https://mcp.api-inference.modelscope.net/今天吃什么"
 }
 ```
 
