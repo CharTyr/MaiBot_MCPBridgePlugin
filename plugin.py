@@ -136,12 +136,39 @@ class MCPToolProxy(BaseTool):
                 "content": result.content
             }
         else:
-            error_msg = f"MCP 工具调用失败: {result.error}"
-            logger.warning(error_msg)
+            # 友好的错误提示
+            error_msg = self._format_error_message(result.error, result.duration_ms)
+            logger.warning(f"MCP 工具 {self.name} 调用失败: {result.error}")
             return {
                 "name": self.name,
                 "content": error_msg
             }
+    
+    def _format_error_message(self, error: str, duration_ms: float) -> str:
+        """格式化友好的错误消息"""
+        if not error:
+            return "工具调用失败（未知错误）"
+        
+        error_lower = error.lower()
+        
+        # 连接相关错误
+        if "未连接" in error or "not connected" in error_lower:
+            return f"⚠️ MCP 服务器 [{self._mcp_server_name}] 未连接，请检查服务器状态或等待自动重连"
+        
+        # 超时错误
+        if "超时" in error or "timeout" in error_lower:
+            return f"⏱️ 工具调用超时（耗时 {duration_ms:.0f}ms），服务器响应过慢，请稍后重试"
+        
+        # 连接断开
+        if "connection" in error_lower and ("closed" in error_lower or "reset" in error_lower):
+            return f"🔌 与 MCP 服务器 [{self._mcp_server_name}] 的连接已断开，正在尝试重连..."
+        
+        # 参数错误
+        if "invalid" in error_lower and "argument" in error_lower:
+            return f"❌ 参数错误: {error}"
+        
+        # 其他错误
+        return f"❌ 工具调用失败: {error}"
     
     async def direct_execute(self, **function_args) -> Dict[str, Any]:
         """直接执行（供其他插件调用）"""
@@ -239,10 +266,123 @@ mcp_tool_registry = MCPToolRegistry()
 _plugin_instance: Optional["MCPBridgePlugin"] = None
 
 
+class MCPStatusTool(BaseTool):
+    """MCP 状态查询工具 - 查看 MCP 服务器连接状态和调用统计"""
+    
+    name = "mcp_status"
+    description = "查询 MCP 桥接插件的状态，包括服务器连接状态、可用工具列表、调用统计等信息"
+    parameters = [
+        ("query_type", ToolParamType.STRING, "查询类型", False, ["status", "tools", "stats", "all"]),
+        ("server_name", ToolParamType.STRING, "指定服务器名称（可选，不指定则查询所有）", False, None),
+    ]
+    available_for_llm = True
+    
+    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+        """执行状态查询"""
+        query_type = function_args.get("query_type", "status")
+        server_name = function_args.get("server_name")
+        
+        result_parts = []
+        
+        if query_type in ("status", "all"):
+            result_parts.append(self._format_status(server_name))
+        
+        if query_type in ("tools", "all"):
+            result_parts.append(self._format_tools(server_name))
+        
+        if query_type in ("stats", "all"):
+            result_parts.append(self._format_stats(server_name))
+        
+        return {
+            "name": self.name,
+            "content": "\n\n".join(result_parts) if result_parts else "未知的查询类型"
+        }
+    
+    def _format_status(self, server_name: Optional[str] = None) -> str:
+        """格式化状态信息"""
+        status = mcp_manager.get_status()
+        lines = ["📊 MCP 桥接插件状态"]
+        lines.append(f"  总服务器数: {status['total_servers']}")
+        lines.append(f"  已连接: {status['connected_servers']}")
+        lines.append(f"  已断开: {status['disconnected_servers']}")
+        lines.append(f"  可用工具数: {status['total_tools']}")
+        lines.append(f"  心跳检测: {'运行中' if status['heartbeat_running'] else '已停止'}")
+        
+        lines.append("\n🔌 服务器详情:")
+        for name, info in status['servers'].items():
+            if server_name and name != server_name:
+                continue
+            status_icon = "✅" if info['connected'] else "❌"
+            enabled_text = "" if info['enabled'] else " (已禁用)"
+            lines.append(f"  {status_icon} {name}{enabled_text}")
+            lines.append(f"     传输: {info['transport']}, 工具数: {info['tools_count']}")
+            if info['consecutive_failures'] > 0:
+                lines.append(f"     ⚠️ 连续失败: {info['consecutive_failures']} 次")
+        
+        return "\n".join(lines)
+    
+    def _format_tools(self, server_name: Optional[str] = None) -> str:
+        """格式化工具列表"""
+        tools = mcp_manager.all_tools
+        lines = ["🔧 可用 MCP 工具"]
+        
+        # 按服务器分组
+        by_server: Dict[str, List[str]] = {}
+        for tool_key, (tool_info, _) in tools.items():
+            if server_name and tool_info.server_name != server_name:
+                continue
+            if tool_info.server_name not in by_server:
+                by_server[tool_info.server_name] = []
+            by_server[tool_info.server_name].append(f"  • {tool_key}: {tool_info.description[:50]}...")
+        
+        for srv_name, tool_list in by_server.items():
+            lines.append(f"\n📦 {srv_name} ({len(tool_list)} 个工具):")
+            lines.extend(tool_list)
+        
+        if not by_server:
+            lines.append("  (无可用工具)")
+        
+        return "\n".join(lines)
+    
+    def _format_stats(self, server_name: Optional[str] = None) -> str:
+        """格式化统计信息"""
+        stats = mcp_manager.get_all_stats()
+        lines = ["📈 调用统计"]
+        
+        # 全局统计
+        g = stats['global']
+        lines.append(f"  总调用次数: {g['total_tool_calls']}")
+        lines.append(f"  成功: {g['successful_calls']}, 失败: {g['failed_calls']}")
+        if g['total_tool_calls'] > 0:
+            success_rate = (g['successful_calls'] / g['total_tool_calls']) * 100
+            lines.append(f"  成功率: {success_rate:.1f}%")
+        lines.append(f"  运行时间: {g['uptime_seconds']:.0f} 秒")
+        lines.append(f"  调用频率: {g['calls_per_minute']:.2f} 次/分钟")
+        
+        # 工具统计
+        tool_stats = stats.get('tools', {})
+        if tool_stats:
+            lines.append("\n🔧 工具调用详情:")
+            for tool_key, ts in tool_stats.items():
+                if server_name and not tool_key.startswith(f"mcp_{server_name}_"):
+                    continue
+                if ts['total_calls'] > 0:
+                    lines.append(f"  • {tool_key}")
+                    lines.append(f"    调用: {ts['total_calls']} 次, 成功率: {ts['success_rate']}%")
+                    lines.append(f"    平均耗时: {ts['avg_duration_ms']:.0f}ms")
+                    if ts['last_error']:
+                        lines.append(f"    最近错误: {ts['last_error'][:50]}...")
+        
+        return "\n".join(lines)
+    
+    async def direct_execute(self, **function_args) -> Dict[str, Any]:
+        return await self.execute(function_args)
+
+
 class MCPStartupHandler(BaseEventHandler):
     """MCP 启动事件处理器
     
-    在 MaiBot 启动完成后（ON_START 事件）异步连接 MCP 服务器
+    在 MaiBot 启动完成后（ON_START 事件）异步连接 MCP 服务器并启动心跳检测
     """
     
     event_type = EventType.ON_START
@@ -262,13 +402,16 @@ class MCPStartupHandler(BaseEventHandler):
         logger.info("MCP 桥接插件收到 ON_START 事件，开始连接 MCP 服务器...")
         await _plugin_instance._async_connect_servers()
         
+        # 启动心跳检测
+        await mcp_manager.start_heartbeat()
+        
         return (True, True, None, None, None)
 
 
 class MCPStopHandler(BaseEventHandler):
     """MCP 停止事件处理器
     
-    在 MaiBot 停止时（ON_STOP 事件）关闭所有 MCP 连接
+    在 MaiBot 停止时（ON_STOP 事件）关闭所有 MCP 连接和心跳检测
     """
     
     event_type = EventType.ON_STOP
@@ -279,11 +422,13 @@ class MCPStopHandler(BaseEventHandler):
     
     async def execute(self, message):
         """处理停止事件"""
-        logger.info("MCP 桥接插件收到 ON_STOP 事件，正在关闭 MCP 连接...")
+        logger.info("MCP 桥接插件收到 ON_STOP 事件，正在关闭...")
+        
+        # shutdown 会自动停止心跳检测
         await mcp_manager.shutdown()
         mcp_tool_registry.clear()
-        logger.info("MCP 桥接插件已关闭所有连接")
         
+        logger.info("MCP 桥接插件已关闭所有连接")
         return (True, True, None, None, None)
 
 
@@ -371,6 +516,39 @@ class MCPBridgePlugin(BasePlugin):
                 max=60.0,
                 step=1.0,
                 order=6,
+            ),
+            "heartbeat_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="💓 心跳检测 - 定期检测服务器连接状态",
+                label="💓 启用心跳检测",
+                order=7,
+            ),
+            "heartbeat_interval": ConfigField(
+                type=float,
+                default=60.0,
+                description="💓 心跳间隔 - 心跳检测的间隔时间（秒）",
+                label="💓 心跳间隔（秒）",
+                min=10.0,
+                max=300.0,
+                step=10.0,
+                order=8,
+            ),
+            "auto_reconnect": ConfigField(
+                type=bool,
+                default=True,
+                description="🔄 自动重连 - 检测到断开时自动尝试重连",
+                label="🔄 自动重连",
+                order=9,
+            ),
+            "max_reconnect_attempts": ConfigField(
+                type=int,
+                default=3,
+                description="🔄 最大重连次数 - 连续重连失败后暂停重连",
+                label="🔄 最大重连次数",
+                min=1,
+                max=10,
+                order=10,
             ),
         },
         "servers": {
@@ -518,7 +696,7 @@ class MCPBridgePlugin(BasePlugin):
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
         """返回插件的所有组件
         
-        返回事件处理器，MCP 工具会在 ON_START 事件后动态注册
+        返回事件处理器和内置工具，MCP 工具会在 ON_START 事件后动态注册
         """
         components: List[Tuple[ComponentInfo, Type]] = []
         
@@ -530,6 +708,16 @@ class MCPBridgePlugin(BasePlugin):
         stop_handler_info = MCPStopHandler.get_handler_info()
         components.append((stop_handler_info, MCPStopHandler))
         
+        # 添加内置状态查询工具
+        status_tool_info = ToolInfo(
+            name=MCPStatusTool.name,
+            tool_description=MCPStatusTool.description,
+            enabled=True,
+            tool_parameters=MCPStatusTool.parameters,
+            component_type=ComponentType.TOOL,
+        )
+        components.append((status_tool_info, MCPStatusTool))
+        
         return components
     
     def get_status(self) -> Dict[str, Any]:
@@ -539,3 +727,7 @@ class MCPBridgePlugin(BasePlugin):
             "mcp_manager": mcp_manager.get_status(),
             "registered_tools": len(mcp_tool_registry._tool_classes),
         }
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取详细统计信息"""
+        return mcp_manager.get_all_stats()

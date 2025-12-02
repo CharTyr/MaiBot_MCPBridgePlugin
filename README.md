@@ -10,6 +10,10 @@
 - 🔁 连接失败自动重试
 - ⚡ 工具参数自动转换
 - 🖥️ 支持 WebUI 配置（包括服务器列表）
+- 💓 **v1.1.0** 心跳检测 - 定期检测服务器连接状态
+- 🔄 **v1.1.0** 自动重连 - 检测到断开时自动尝试重连
+- 📊 **v1.1.0** 调用统计 - 记录工具调用次数、成功率、耗时
+- 🛠️ **v1.1.0** 内置状态工具 - 通过 `mcp_status` 查询连接状态
 
 - <img width="3012" height="1794" alt="image" src="https://github.com/user-attachments/assets/ece56404-301a-4abf-b16d-87bd430fc977" />
 
@@ -81,6 +85,10 @@ cp config.example.toml config.toml
 | `auto_connect` | bool | true | 启动时自动连接所有服务器 | ✅ |
 | `retry_attempts` | int | 3 | 连接失败重试次数 | ✅ |
 | `retry_interval` | float | 5.0 | 重试间隔（秒） | ✅ |
+| `heartbeat_enabled` | bool | true | 启用心跳检测 | ✅ |
+| `heartbeat_interval` | float | 60.0 | 心跳检测间隔（秒） | ✅ |
+| `auto_reconnect` | bool | true | 检测到断开时自动重连 | ✅ |
+| `max_reconnect_attempts` | int | 3 | 最大连续重连次数 | ✅ |
 
 ### 服务器配置
 
@@ -185,6 +193,32 @@ MCP 工具在 MaiBot 中的名称格式为：
 ### Q: 工具调用超时怎么办？
 
 增加 `call_timeout` 配置值，或检查 MCP 服务器是否响应正常。
+
+### Q: 如何查看连接状态和统计信息？
+
+有两种方式：
+
+1. **通过 LLM 调用 `mcp_status` 工具**：
+   - 对麦麦说："查看 MCP 服务器状态"
+   - 麦麦会调用内置的 `mcp_status` 工具并返回状态信息
+
+2. **通过代码查询**：
+   ```python
+   from plugins.MCPBridgePlugin import mcp_manager
+   
+   # 获取状态
+   status = mcp_manager.get_status()
+   
+   # 获取详细统计
+   stats = mcp_manager.get_all_stats()
+   ```
+
+### Q: 服务器断开后会自动重连吗？
+
+是的，如果启用了 `heartbeat_enabled` 和 `auto_reconnect`（默认都启用），插件会：
+1. 每 60 秒（可配置）检测一次连接状态
+2. 检测到断开后自动尝试重连
+3. 连续失败达到 `max_reconnect_attempts` 次后暂停重连
 
 ## 已测试的 MCP 服务器
 

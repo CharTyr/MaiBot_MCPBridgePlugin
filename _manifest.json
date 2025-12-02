@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "MCP桥接插件",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具",
   "author": {
     "name": "CharTyr",
@@ -26,9 +26,11 @@
     "features": [
       "支持多个 MCP 服务器",
       "自动发现并注册 MCP 工具",
-      "支持 stdio 和 HTTP 传输方式",
+      "支持 stdio、SSE、HTTP 三种传输方式",
       "工具参数自动转换",
-      "连接状态监控与自动重连"
+      "心跳检测与自动重连",
+      "调用统计（次数、成功率、耗时）",
+      "WebUI 配置支持"
     ]
   },
   "id": "MaiBot Community.MCPBridgePlugin"

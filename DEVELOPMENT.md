@@ -2,6 +2,22 @@
 
 本文档面向希望参与插件开发或进行二次开发的开发者。
 
+## 版本历史
+
+### v1.1.0 (当前版本)
+- ✅ 心跳检测 - 定期检测服务器连接状态
+- ✅ 自动重连 - 检测到断开时自动尝试重连
+- ✅ 调用统计 - 记录工具调用次数、成功率、耗时
+- ✅ 服务器连接统计 - 连接/断开/重连次数
+- ✅ 友好错误提示 - 连接失败、超时等场景的用户友好提示
+- ✅ 内置状态查询工具 `mcp_status` - 通过 LLM 查询连接状态和统计
+- ✅ 独立测试支持 - mcp_client.py 可脱离 MaiBot 独立测试
+
+### v1.0.0
+- 基础 MCP 桥接功能
+- 支持 stdio/sse/http 三种传输方式
+- 动态工具注册
+
 ## 项目结构
 
 ```
@@ -347,6 +363,97 @@ print(result.content)
   - `mcp.client.stdio` - stdio 传输
   - `mcp.client.sse` - SSE 传输
   - `mcp.client.streamable_http` - HTTP Streamable 传输
+
+## v1.1.0 新功能详解
+
+### 心跳检测与自动重连
+
+```python
+# 配置项
+settings = {
+    "heartbeat_enabled": True,      # 启用心跳检测
+    "heartbeat_interval": 60.0,     # 心跳间隔（秒）
+    "auto_reconnect": True,         # 启用自动重连
+    "max_reconnect_attempts": 3,    # 最大连续重连次数
+}
+
+# 心跳检测通过调用 list_tools 验证连接
+# 检测到断开后自动触发重连
+# 连续失败达到上限后暂停重连，避免无限重试
+```
+
+### 调用统计
+
+```python
+# 获取所有统计信息
+stats = mcp_manager.get_all_stats()
+# {
+#   "global": {
+#     "total_tool_calls": 100,
+#     "successful_calls": 95,
+#     "failed_calls": 5,
+#     "uptime_seconds": 3600,
+#     "calls_per_minute": 1.67
+#   },
+#   "servers": {
+#     "howtocook": {
+#       "connect_count": 2,
+#       "disconnect_count": 1,
+#       "reconnect_count": 1,
+#       "consecutive_failures": 0
+#     }
+#   },
+#   "tools": {
+#     "mcp_howtocook_whatToEat": {
+#       "total_calls": 50,
+#       "success_rate": 96.0,
+#       "avg_duration_ms": 320.5
+#     }
+#   }
+# }
+```
+
+### 内置状态查询工具
+
+用户可以通过 LLM 调用 `mcp_status` 工具查询状态：
+
+```
+用户: 查看 MCP 服务器状态
+LLM: [调用 mcp_status(query_type="all")]
+
+📊 MCP 桥接插件状态
+  总服务器数: 2
+  已连接: 2
+  可用工具数: 10
+  心跳检测: 运行中
+
+🔌 服务器详情:
+  ✅ howtocook
+     传输: http, 工具数: 5
+  ✅ filesystem
+     传输: stdio, 工具数: 5
+
+📈 调用统计
+  总调用次数: 100
+  成功: 95, 失败: 5
+  成功率: 95.0%
+```
+
+### 友好错误提示
+
+```python
+# 连接断开
+"⚠️ MCP 服务器 [howtocook] 未连接，请检查服务器状态或等待自动重连"
+
+# 调用超时
+"⏱️ 工具调用超时（耗时 60000ms），服务器响应过慢，请稍后重试"
+
+# 连接断开
+"🔌 与 MCP 服务器 [howtocook] 的连接已断开，正在尝试重连..."
+
+# 参数错误
+"❌ 参数错误: Invalid arguments for tool..."
+```
 
 ## 已知限制
 
