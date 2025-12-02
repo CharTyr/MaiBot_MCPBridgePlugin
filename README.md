@@ -50,7 +50,7 @@ cp config.example.toml config.toml
 - ✅ 全局设置（工具前缀、超时时间、重试配置等）
 - ✅ 服务器列表（通过 JSON 编辑器添加/修改/删除服务器）
 
-在 WebUI 的服务器配置中，使用 JSON 格式编辑服务器列表：
+在 WebUI 的服务器配置中，使用 JSON 格式编辑服务器列表（以下远程mcp服务器地址均为虚构不要直接套用）：
 
 ```json
 [
