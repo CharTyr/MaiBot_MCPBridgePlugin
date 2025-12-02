@@ -4,6 +4,7 @@ MCP 桥接插件
 """
 
 import asyncio
+import json
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 from src.common.logger import get_logger
@@ -109,8 +110,6 @@ class MCPToolProxy(BaseTool):
     
     async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
         """执行 MCP 工具调用"""
-        import json
-        
         # 移除 MaiBot 内部添加的标记
         args = {k: v for k, v in function_args.items() if k != "llm_called"}
         
@@ -120,7 +119,7 @@ class MCPToolProxy(BaseTool):
             if isinstance(value, str):
                 # 尝试解析为 JSON
                 try:
-                    if value.startswith(('[', '{')):
+                    if value.startswith(("[", "{")):
                         parsed_args[key] = json.loads(value)
                     else:
                         parsed_args[key] = value
@@ -134,9 +133,14 @@ class MCPToolProxy(BaseTool):
         result = await mcp_manager.call_tool(self._mcp_tool_key, parsed_args)
         
         if result.success:
+            content = result.content
+            
+            # v1.3.0: 后处理逻辑
+            content = await self._post_process_result(content)
+            
             return {
                 "name": self.name,
-                "content": result.content
+                "content": content
             }
         else:
             # 友好的错误提示
@@ -146,6 +150,187 @@ class MCPToolProxy(BaseTool):
                 "name": self.name,
                 "content": error_msg
             }
+    
+    async def _post_process_result(self, content: str) -> str:
+        """v1.3.0: 对工具返回结果进行后处理（摘要提炼）
+        
+        Args:
+            content: 原始工具返回内容
+            
+        Returns:
+            处理后的内容（如果未启用后处理或不满足条件，返回原内容）
+        """
+        global _plugin_instance
+        
+        # 检查插件实例是否存在
+        if _plugin_instance is None:
+            return content
+        
+        settings = _plugin_instance.config.get("settings", {})
+        
+        # 检查全局后处理开关
+        if not settings.get("post_process_enabled", False):
+            return content
+        
+        # 获取服务器级别配置（如果有）
+        server_post_config = self._get_server_post_process_config()
+        
+        # 确定是否启用（服务器配置优先）
+        if server_post_config is not None:
+            if not server_post_config.get("enabled", True):
+                return content
+        
+        # 获取阈值（服务器配置 > 全局配置）
+        threshold = settings.get("post_process_threshold", 500)
+        if server_post_config and "threshold" in server_post_config:
+            threshold = server_post_config["threshold"]
+        
+        # 检查内容长度是否超过阈值
+        content_length = len(content) if content else 0
+        if content_length <= threshold:
+            logger.debug(f"MCP 工具 {self.name} 结果长度 {content_length} 未超过阈值 {threshold}，跳过后处理")
+            return content
+        
+        # 获取用户原始问题
+        user_query = self._get_user_query()
+        if not user_query:
+            logger.debug(f"MCP 工具 {self.name} 无法获取用户问题，跳过后处理")
+            return content
+        
+        # 获取后处理配置
+        max_tokens = settings.get("post_process_max_tokens", 500)
+        if server_post_config and "max_tokens" in server_post_config:
+            max_tokens = server_post_config["max_tokens"]
+        
+        prompt_template = settings.get("post_process_prompt", "")
+        if server_post_config and "prompt" in server_post_config:
+            prompt_template = server_post_config["prompt"]
+        
+        if not prompt_template:
+            prompt_template = """用户问题：{query}
+
+工具返回内容：
+{result}
+
+请从上述内容中提取与用户问题最相关的关键信息，简洁准确地输出："""
+        
+        # 构建后处理 prompt
+        try:
+            prompt = prompt_template.format(query=user_query, result=content)
+        except KeyError as e:
+            logger.warning(f"后处理 prompt 模板格式错误，缺少变量: {e}")
+            return content
+        
+        # 调用 LLM 进行后处理
+        try:
+            processed_content = await self._call_post_process_llm(prompt, max_tokens, settings, server_post_config)
+            if processed_content:
+                logger.info(f"MCP 工具 {self.name} 后处理完成: {content_length} -> {len(processed_content)} 字符")
+                return processed_content
+            else:
+                logger.warning(f"MCP 工具 {self.name} 后处理返回空内容，使用原始结果")
+                return content
+        except Exception as e:
+            logger.error(f"MCP 工具 {self.name} 后处理失败: {e}")
+            return content
+    
+    def _get_server_post_process_config(self) -> Optional[Dict[str, Any]]:
+        """获取当前服务器的后处理配置（如果有）"""
+        global _plugin_instance
+        
+        if _plugin_instance is None:
+            return None
+        
+        # 从服务器配置中查找 post_process 配置
+        servers_section = _plugin_instance.config.get("servers", {})
+        if isinstance(servers_section, dict):
+            servers_list = servers_section.get("list", "[]")
+            if isinstance(servers_list, str):
+                try:
+                    servers = json.loads(servers_list) if servers_list.strip() else []
+                except json.JSONDecodeError:
+                    return None
+            elif isinstance(servers_list, list):
+                servers = servers_list
+            else:
+                return None
+        else:
+            servers = servers_section if isinstance(servers_section, list) else []
+        
+        # 查找当前服务器的配置
+        for server_conf in servers:
+            if server_conf.get("name") == self._mcp_server_name:
+                return server_conf.get("post_process")
+        
+        return None
+    
+    def _get_user_query(self) -> Optional[str]:
+        """获取用户原始问题"""
+        # 尝试从 chat_stream 获取
+        if self.chat_stream and hasattr(self.chat_stream, "context") and self.chat_stream.context:
+            try:
+                last_message = self.chat_stream.context.get_last_message()
+                if last_message and hasattr(last_message, "processed_plain_text"):
+                    return last_message.processed_plain_text
+            except Exception as e:
+                logger.debug(f"从 chat_stream 获取用户问题失败: {e}")
+        
+        return None
+    
+    async def _call_post_process_llm(
+        self,
+        prompt: str,
+        max_tokens: int,
+        settings: Dict[str, Any],
+        server_config: Optional[Dict[str, Any]]
+    ) -> Optional[str]:
+        """调用 LLM 进行后处理
+        
+        Args:
+            prompt: 后处理 prompt
+            max_tokens: 最大输出 token
+            settings: 全局设置
+            server_config: 服务器级别配置
+            
+        Returns:
+            处理后的内容，失败返回 None
+        """
+        from src.config.config import model_config
+        from src.config.api_ada_configs import TaskConfig
+        from src.llm_models.utils_model import LLMRequest
+        
+        # 确定使用的模型
+        model_name = settings.get("post_process_model", "")
+        if server_config and "model" in server_config:
+            model_name = server_config["model"]
+        
+        if model_name:
+            # 用户指定了模型，创建自定义 TaskConfig
+            task_config = TaskConfig(
+                model_list=[model_name],
+                max_tokens=max_tokens,
+                temperature=0.3,  # 使用较低温度确保输出稳定
+                slow_threshold=30.0,
+            )
+            logger.debug(f"后处理使用指定模型: {model_name}")
+        else:
+            # 使用 Utils 模型组
+            task_config = model_config.model_task_config.utils
+            logger.debug(f"后处理使用 Utils 模型组")
+        
+        # 创建 LLM 请求
+        llm_request = LLMRequest(model_set=task_config, request_type="mcp_post_process")
+        
+        # 调用 LLM
+        response, (reasoning, model_used, _) = await llm_request.generate_response_async(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=0.3,
+        )
+        
+        logger.debug(f"后处理使用模型: {model_used}")
+        
+        return response.strip() if response else None
     
     def _format_error_message(self, error: str, duration_ms: float) -> str:
         """格式化友好的错误消息"""
@@ -845,6 +1030,60 @@ class MCPBridgePlugin(BasePlugin):
                 label="📝 启用 Prompts（实验性）",
                 hint="启用后会自动发现并注册服务器提供的提示模板，可通过 mcp_get_prompt 工具获取",
                 order=12,
+            ),
+            # ============ v1.3.0 后处理配置 ============
+            "post_process_enabled": ConfigField(
+                type=bool,
+                default=False,
+                description="🔄 结果后处理 - 使用 LLM 对 MCP 工具返回的长结果进行摘要提炼",
+                label="🔄 启用结果后处理",
+                hint="当工具返回内容过长时，使用 LLM 提取关键信息，提高回复质量",
+                order=20,
+            ),
+            "post_process_threshold": ConfigField(
+                type=int,
+                default=500,
+                description="📏 后处理阈值 - 结果长度（字符数）超过此值才触发后处理",
+                label="📏 后处理阈值（字符）",
+                min=100,
+                max=5000,
+                step=100,
+                hint="建议设置为 300-1000，太小会增加不必要的 LLM 调用",
+                order=21,
+            ),
+            "post_process_max_tokens": ConfigField(
+                type=int,
+                default=500,
+                description="📝 后处理输出限制 - LLM 摘要输出的最大 token 数",
+                label="📝 后处理最大输出 token",
+                min=100,
+                max=2000,
+                step=50,
+                order=22,
+            ),
+            "post_process_model": ConfigField(
+                type=str,
+                default="",
+                description="🤖 后处理模型 - 指定用于后处理的模型名称（需与 model_config.toml 中一致）",
+                label="🤖 后处理模型（可选）",
+                placeholder="留空则使用 Utils 模型组",
+                hint="留空将使用主程序 model_config.toml 中的 utils 模型组；填写模型名称可指定特定模型",
+                order=23,
+            ),
+            "post_process_prompt": ConfigField(
+                type=str,
+                default="""用户问题：{query}
+
+工具返回内容：
+{result}
+
+请从上述内容中提取与用户问题最相关的关键信息，简洁准确地输出：""",
+                description="📋 后处理提示词模板 - {query} 为用户问题，{result} 为工具返回内容",
+                label="📋 后处理提示词模板",
+                input_type="textarea",
+                rows=8,
+                hint="可用变量：{query}=用户问题，{result}=工具返回内容",
+                order=24,
             ),
         },
         "servers": {
