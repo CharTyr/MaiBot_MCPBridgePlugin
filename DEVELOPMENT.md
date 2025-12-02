@@ -4,598 +4,251 @@
 
 ## 版本历史
 
-### v1.2.0 (当前版本)
+### v1.4.x (当前版本)
+- ✅ 工具禁用管理 - WebUI 直接禁用特定工具
+- ✅ 调用链路追踪 - 记录每次调用详情
+- ✅ 工具调用缓存 - LRU 缓存相同参数调用
+- ✅ 工具权限控制 - 按群/用户限制工具使用
+- ✅ 快速入门引导 - WebUI 新手友好
+- ✅ 权限快捷配置 - 无需写 JSON
+
+### v1.3.0
+- ✅ 结果后处理 - 使用 LLM 对长结果进行摘要提炼
+
+### v1.2.0
 - ✅ Resources 支持 - 读取 MCP 服务器提供的资源（实验性）
 - ✅ Prompts 支持 - 使用 MCP 服务器提供的提示模板（实验性）
-- ✅ `mcp_status` 扩展 - 新增 `resources` 和 `prompts` 查询类型
-- ✅ `mcp_read_resource` 工具 - 读取资源内容
-- ✅ `mcp_get_prompt` 工具 - 获取提示模板内容
-- ✅ 新配置项 `enable_resources` 和 `enable_prompts`（默认关闭）
 
-### v1.1.1
-- ✅ `/mcp` 命令 - 通过聊天命令查询状态、重连服务器
-- ✅ WebUI 状态显示 - 配置页面显示连接状态和工具列表
-- ✅ 文档完善 - 添加 MCP 服务器获取指南、三引号格式说明
-
-### v1.1.0
-- ✅ 心跳检测 - 定期检测服务器连接状态
-- ✅ 自动重连 - 检测到断开时自动尝试重连
-- ✅ 调用统计 - 记录工具调用次数、成功率、耗时
-- ✅ 服务器连接统计 - 连接/断开/重连次数
-- ✅ 友好错误提示 - 连接失败、超时等场景的用户友好提示
-- ✅ 内置状态查询工具 `mcp_status` - 通过 LLM 查询连接状态和统计
-- ✅ 独立测试支持 - mcp_client.py 可脱离 MaiBot 独立测试
+### v1.1.x
+- ✅ 心跳检测、自动重连、调用统计
+- ✅ `/mcp` 命令、WebUI 状态显示
+- ✅ 内置状态查询工具 `mcp_status`
 
 ### v1.0.0
 - 基础 MCP 桥接功能
-- 支持 stdio/sse/http 三种传输方式
-- 动态工具注册
+
+---
 
 ## 项目结构
 
 ```
 MCPBridgePlugin/
 ├── __init__.py           # 模块导出
-├── _manifest.json        # 插件清单（MaiBot 插件系统要求）
-├── .gitignore            # Git 忽略规则
-├── config.example.toml   # 配置文件示例
+├── _manifest.json        # 插件清单
+├── config.example.toml   # 配置示例
+├── config.toml           # 运行时配置
 ├── mcp_client.py         # MCP 客户端封装（核心）
 ├── plugin.py             # MaiBot 插件主逻辑
+├── requirements.txt      # 依赖
 ├── README.md             # 用户文档
-└── DEVELOPMENT.md        # 开发文档（本文件）
+├── DEVELOPMENT.md        # 开发文档（本文件）
+└── logs/                 # 追踪日志目录（自动创建）
 ```
 
-## 核心模块说明
+---
 
-### 1. mcp_client.py - MCP 客户端封装
+## 核心模块
 
-这是与 MCP 服务器通信的核心模块。
+### mcp_client.py
 
-#### 主要类
+与 MCP 服务器通信的核心模块。
 
 ```python
+# 传输类型
 class TransportType(Enum):
-    """MCP 传输类型"""
-    STDIO = "stdio"              # 本地进程通信
-    SSE = "sse"                  # Server-Sent Events
-    HTTP = "http"                # HTTP Streamable（推荐）
+    STDIO = "stdio"
+    SSE = "sse"
+    HTTP = "http"
     STREAMABLE_HTTP = "streamable_http"
-```
 
-```python
+# 服务器配置
 @dataclass
 class MCPServerConfig:
-    """MCP 服务器配置"""
-    name: str                    # 服务器名称（唯一标识）
-    enabled: bool = True         # 是否启用
-    transport: TransportType     # 传输方式
-    command: str = ""            # stdio 模式的启动命令
-    args: List[str] = []         # stdio 模式的命令参数
-    env: Dict[str, str] = {}     # stdio 模式的环境变量
-    url: str = ""                # HTTP/SSE 模式的服务器 URL
-```
+    name: str
+    enabled: bool
+    transport: TransportType
+    command: str = ""      # stdio
+    args: List[str] = []   # stdio
+    url: str = ""          # http/sse
 
-```python
-@dataclass
-class MCPToolInfo:
-    """MCP 工具信息"""
-    name: str                    # 工具名称
-    description: str             # 工具描述
-    input_schema: Dict[str, Any] # 参数 JSON Schema
-    server_name: str             # 所属服务器名称
-```
-
-```python
-@dataclass
-class MCPCallResult:
-    """MCP 工具调用结果"""
-    success: bool                # 是否成功
-    content: Any                 # 返回内容
-    error: Optional[str] = None  # 错误信息
-```
-
-#### MCPClientSession
-
-管理与单个 MCP 服务器的连接。
-
-```python
-class MCPClientSession:
-    async def connect(self) -> bool:
-        """连接到 MCP 服务器，返回是否成功"""
-    
-    async def disconnect(self) -> None:
-        """断开连接"""
-    
-    async def call_tool(self, tool_name: str, arguments: Dict) -> MCPCallResult:
-        """调用 MCP 工具"""
-    
-    @property
-    def tools(self) -> List[MCPToolInfo]:
-        """获取服务器提供的工具列表"""
-    
-    @property
-    def is_connected(self) -> bool:
-        """是否已连接"""
-```
-
-#### MCPClientManager
-
-全局单例，管理多个 MCP 服务器连接。
-
-```python
-class MCPClientManager:
-    async def add_server(self, config: MCPServerConfig) -> bool:
-        """添加并连接服务器"""
-    
-    async def remove_server(self, server_name: str) -> bool:
-        """移除服务器"""
-    
-    async def reconnect_server(self, server_name: str) -> bool:
-        """重新连接服务器"""
-    
-    async def call_tool(self, tool_key: str, arguments: Dict) -> MCPCallResult:
-        """调用工具（tool_key 格式: {prefix}_{server}_{tool}）"""
-    
-    async def shutdown(self) -> None:
-        """关闭所有连接"""
-    
-    @property
-    def all_tools(self) -> Dict[str, Tuple[MCPToolInfo, MCPClientSession]]:
-        """获取所有已注册的工具"""
-    
-    def get_status(self) -> Dict[str, Any]:
-        """获取状态信息"""
-
-# 全局单例
+# 全局管理器
 mcp_manager = MCPClientManager()
 ```
 
-### 2. plugin.py - MaiBot 插件主逻辑
+### plugin.py
 
-#### 核心函数
-
-```python
-def convert_json_type_to_tool_param_type(json_type: str) -> ToolParamType:
-    """将 JSON Schema 类型转换为 MaiBot 的 ToolParamType"""
-    # MaiBot 支持: STRING, INTEGER, FLOAT, BOOLEAN
-    # array/object 转为 STRING（JSON 字符串形式）
-
-def parse_mcp_parameters(input_schema: Dict) -> List[Tuple]:
-    """解析 MCP 工具的参数 schema，转换为 MaiBot 参数格式"""
-
-def create_mcp_tool_class(tool_key, tool_info, tool_prefix) -> Type[MCPToolProxy]:
-    """根据 MCP 工具信息动态创建 BaseTool 子类"""
-```
-
-#### MCPToolProxy
-
-MCP 工具的代理基类，所有 MCP 工具都继承自此类。
+MaiBot 插件主逻辑，v1.4.0 新增模块：
 
 ```python
-class MCPToolProxy(BaseTool):
-    """MCP 工具代理基类"""
-    
-    # 类属性（由动态子类覆盖）
-    name: str = ""
-    description: str = ""
-    parameters: List[Tuple] = []
-    available_for_llm: bool = True
-    
-    # MCP 相关属性
-    _mcp_tool_key: str = ""      # 在 mcp_manager 中的工具键
-    _mcp_original_name: str = "" # MCP 服务器中的原始工具名
-    _mcp_server_name: str = ""   # MCP 服务器名称
-    
-    async def execute(self, function_args: Dict) -> Dict:
-        """执行 MCP 工具调用"""
-    
-    async def direct_execute(self, **function_args) -> Dict:
-        """直接执行（供其他插件调用）"""
+# 调用追踪
+@dataclass
+class ToolCallRecord:
+    call_id: str
+    timestamp: float
+    tool_name: str
+    server_name: str
+    arguments: Dict
+    raw_result: str
+    duration_ms: float
+    success: bool
+    cache_hit: bool
+    post_processed: bool
+
+tool_call_tracer = ToolCallTracer()
+
+# 调用缓存
+@dataclass
+class CacheEntry:
+    tool_name: str
+    args_hash: str
+    result: str
+    expires_at: float
+    hit_count: int
+
+tool_call_cache = ToolCallCache()
+
+# 权限检查
+permission_checker = PermissionChecker()
 ```
 
-#### MCPToolRegistry
-
-管理动态创建的工具类。
-
-```python
-class MCPToolRegistry:
-    def register_tool(self, tool_key, tool_info, tool_prefix) -> Tuple[ToolInfo, Type]:
-        """注册 MCP 工具，返回组件信息和工具类"""
-    
-    def unregister_tool(self, tool_key: str) -> bool:
-        """注销工具"""
-    
-    def clear(self) -> None:
-        """清空所有注册"""
-
-# 全局实例
-mcp_tool_registry = MCPToolRegistry()
-```
-
-#### 事件处理器
-
-```python
-class MCPStartupHandler(BaseEventHandler):
-    """ON_START 事件处理器 - 启动时连接 MCP 服务器"""
-    event_type = EventType.ON_START
-
-class MCPStopHandler(BaseEventHandler):
-    """ON_STOP 事件处理器 - 停止时关闭连接"""
-    event_type = EventType.ON_STOP
-```
-
-#### MCPBridgePlugin
-
-主插件类。
-
-```python
-@register_plugin
-class MCPBridgePlugin(BasePlugin):
-    plugin_name = "mcp_bridge_plugin"
-    python_dependencies = ["mcp"]
-    
-    async def _async_connect_servers(self) -> None:
-        """异步连接所有配置的 MCP 服务器"""
-    
-    def _parse_server_config(self, conf: Dict) -> MCPServerConfig:
-        """解析服务器配置字典"""
-    
-    def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
-        """返回插件组件（事件处理器）"""
-    
-    def get_status(self) -> Dict[str, Any]:
-        """获取插件状态"""
-```
+---
 
 ## 数据流
 
 ```
-1. MaiBot 启动
-   ↓
-2. MCPBridgePlugin.__init__() 初始化
-   ↓
-3. ON_START 事件触发 MCPStartupHandler
-   ↓
-4. _async_connect_servers() 连接所有服务器
-   ↓
-5. 对每个服务器:
-   - MCPClientManager.add_server() 连接
-   - 获取工具列表
-   - MCPToolRegistry.register_tool() 创建工具类
-   - component_registry.register_component() 注册到 MaiBot
-   ↓
-6. LLM 可以看到并调用这些工具
-   ↓
-7. 工具调用时:
-   - MCPToolProxy.execute() 被调用
-   - mcp_manager.call_tool() 转发到 MCP 服务器
-   - 返回结果给 LLM
-   ↓
-8. ON_STOP 事件触发 MCPStopHandler
-   ↓
-9. mcp_manager.shutdown() 关闭所有连接
+MaiBot 启动
+    ↓
+MCPBridgePlugin.__init__()
+    ├─ 配置 mcp_manager
+    ├─ 配置 tool_call_tracer
+    ├─ 配置 tool_call_cache
+    └─ 配置 permission_checker
+    ↓
+ON_START → _async_connect_servers()
+    ├─ 连接服务器
+    ├─ 获取工具列表
+    ├─ 检查禁用列表
+    └─ 注册工具到 MaiBot
+    ↓
+LLM 调用工具 → MCPToolProxy.execute()
+    ├─ 权限检查 (permission_checker)
+    ├─ 缓存检查 (tool_call_cache)
+    ├─ 调用 MCP 服务器
+    ├─ 后处理 (可选)
+    └─ 记录追踪 (tool_call_tracer)
+    ↓
+ON_STOP → mcp_manager.shutdown()
 ```
 
-## 配置格式
+---
 
-插件支持两种配置格式：
+## v1.4.0 新增功能详解
 
-### 1. WebUI JSON 格式（推荐）
-
-```toml
-[servers]
-list = '''
-[
-  {
-    "name": "server-name",
-    "enabled": true,
-    "transport": "http",
-    "url": "https://example.com/mcp"
-  }
-]
-'''
-```
-
-### 2. TOML 数组格式（已废弃，但仍支持）
-
-```toml
-[[servers]]
-name = "server-name"
-enabled = true
-transport = "http"
-url = "https://example.com/mcp"
-```
-
-代码中通过 `_async_connect_servers()` 自动检测并处理两种格式。
-
-## 扩展开发指南
-
-### 添加新的传输类型
-
-1. 在 `mcp_client.py` 的 `TransportType` 枚举中添加新类型
-2. 在 `MCPClientSession` 中添加 `_connect_xxx()` 方法
-3. 在 `connect()` 方法中添加分支处理
-4. 在 `_cleanup()` 中添加资源清理逻辑
-
-### 添加新的配置项
-
-1. 在 `plugin.py` 的 `config_schema` 中添加 `ConfigField`
-2. 在 `config.example.toml` 中添加示例
-3. 在相应的方法中读取和使用配置
-
-### 添加工具过滤/转换
-
-在 `create_mcp_tool_class()` 或 `MCPToolRegistry.register_tool()` 中添加逻辑。
-
-### 添加运行时管理 API
-
-可以在 `MCPBridgePlugin` 中添加方法，通过 MaiBot 的插件 API 暴露：
+### 工具禁用管理
 
 ```python
-async def add_server_runtime(self, config: Dict) -> bool:
-    """运行时添加服务器"""
+# 配置
+[tools]
+disabled_tools = "mcp_xxx_delete_file\nmcp_xxx_write_file"
+
+# 实现：在注册工具时检查
+disabled_tools = self._get_disabled_tools()
+is_disabled = tool_name in disabled_tools
+tool_class.available_for_llm = not is_disabled
+```
+
+### 调用链路追踪
+
+```python
+class ToolCallTracer:
+    _records: deque[ToolCallRecord]  # 环形缓冲
     
-async def remove_server_runtime(self, server_name: str) -> bool:
-    """运行时移除服务器"""
+    def record(self, record: ToolCallRecord) -> None
+    def get_recent(self, n: int) -> List[ToolCallRecord]
+    def get_by_tool(self, tool_name: str) -> List[ToolCallRecord]
+
+# 配置
+trace_enabled = True
+trace_max_records = 100
+trace_log_enabled = False  # 写入 logs/trace.jsonl
 ```
 
-## 调试技巧
-
-### 启用详细日志
-
-MCP 客户端使用 `src.common.logger` 记录日志，日志名为 `mcp_client` 和 `mcp_bridge_plugin`。
-
-### 检查连接状态
+### 工具调用缓存
 
 ```python
-from plugins.MCPBridgePlugin import mcp_manager
+class ToolCallCache:
+    _cache: OrderedDict[str, CacheEntry]  # LRU
+    
+    def get(self, tool_name, args) -> Optional[str]
+    def set(self, tool_name, args, result) -> None
+    
+    # 缓存键 = MD5(tool_name + sorted_json_args)
 
-status = mcp_manager.get_status()
-print(status)
-# {
-#   "total_servers": 1,
-#   "connected_servers": 1,
-#   "total_tools": 5,
-#   "servers": {
-#     "howtocook": {"connected": True, "tools_count": 5}
-#   }
-# }
+# 配置
+cache_enabled = False
+cache_ttl = 300
+cache_max_entries = 200
+cache_exclude_tools = "mcp_*_time_*"  # 支持通配符
 ```
 
-### 手动调用工具
+### 工具权限控制
 
 ```python
-result = await mcp_manager.call_tool("mcp_howtocook_whatToEat", {})
-print(result.content)
+class PermissionChecker:
+    _quick_deny_groups: set      # 快捷禁用群
+    _quick_allow_users: set      # 快捷管理员白名单
+    _rules: List[Dict]           # 高级规则
+    
+    def check(self, tool_name, chat_id, user_id, is_group) -> bool
+
+# 检查优先级：
+# 1. 管理员白名单 → 允许
+# 2. 禁用群列表 → 拒绝
+# 3. 高级规则匹配
+# 4. 默认模式 (allow_all / deny_all)
 ```
 
-## 依赖说明
+---
 
-- `mcp` - MCP Python SDK，提供客户端实现
-  - `mcp.ClientSession` - 会话管理
-  - `mcp.client.stdio` - stdio 传输
-  - `mcp.client.sse` - SSE 传输
-  - `mcp.client.streamable_http` - HTTP Streamable 传输
+## 扩展开发
 
-## v1.1.0 新功能详解
+### 添加新传输类型
 
-### 心跳检测与自动重连
+1. `TransportType` 枚举添加类型
+2. `MCPClientSession._connect_xxx()` 实现连接
+3. `connect()` 添加分支
+
+### 添加新配置项
+
+1. `config_schema` 添加 `ConfigField`
+2. `config.example.toml` 添加示例
+3. `__init__` 或相应方法中读取使用
+
+### 添加新命令
+
+在 `MCPStatusCommand.command_pattern` 添加子命令，实现 `_handle_xxx()` 方法。
+
+---
+
+## 调试
 
 ```python
-# 配置项
-settings = {
-    "heartbeat_enabled": True,      # 启用心跳检测
-    "heartbeat_interval": 60.0,     # 心跳间隔（秒）
-    "auto_reconnect": True,         # 启用自动重连
-    "max_reconnect_attempts": 3,    # 最大连续重连次数
-}
+# 检查状态
+from plugins.MCPBridgePlugin import mcp_manager, tool_call_tracer, tool_call_cache
 
-# 心跳检测通过调用 list_tools 验证连接
-# 检测到断开后自动触发重连
-# 连续失败达到上限后暂停重连，避免无限重试
+mcp_manager.get_status()
+tool_call_tracer.get_recent(10)
+tool_call_cache.get_stats()
+
+# 手动调用
+result = await mcp_manager.call_tool("mcp_xxx_tool", {"arg": "value"})
 ```
 
-### 调用统计
+---
 
-```python
-# 获取所有统计信息
-stats = mcp_manager.get_all_stats()
-# {
-#   "global": {
-#     "total_tool_calls": 100,
-#     "successful_calls": 95,
-#     "failed_calls": 5,
-#     "uptime_seconds": 3600,
-#     "calls_per_minute": 1.67
-#   },
-#   "servers": {
-#     "howtocook": {
-#       "connect_count": 2,
-#       "disconnect_count": 1,
-#       "reconnect_count": 1,
-#       "consecutive_failures": 0
-#     }
-#   },
-#   "tools": {
-#     "mcp_howtocook_whatToEat": {
-#       "total_calls": 50,
-#       "success_rate": 96.0,
-#       "avg_duration_ms": 320.5
-#     }
-#   }
-# }
-```
+## 依赖
 
-### 内置状态查询工具
-
-用户可以通过 LLM 调用 `mcp_status` 工具查询状态：
-
-```
-用户: 查看 MCP 服务器状态
-LLM: [调用 mcp_status(query_type="all")]
-
-📊 MCP 桥接插件状态
-  总服务器数: 2
-  已连接: 2
-  可用工具数: 10
-  心跳检测: 运行中
-
-🔌 服务器详情:
-  ✅ howtocook
-     传输: http, 工具数: 5
-  ✅ filesystem
-     传输: stdio, 工具数: 5
-
-📈 调用统计
-  总调用次数: 100
-  成功: 95, 失败: 5
-  成功率: 95.0%
-```
-
-### 友好错误提示
-
-```python
-# 连接断开
-"⚠️ MCP 服务器 [howtocook] 未连接，请检查服务器状态或等待自动重连"
-
-# 调用超时
-"⏱️ 工具调用超时（耗时 60000ms），服务器响应过慢，请稍后重试"
-
-# 连接断开
-"🔌 与 MCP 服务器 [howtocook] 的连接已断开，正在尝试重连..."
-
-# 参数错误
-"❌ 参数错误: Invalid arguments for tool..."
-```
-
-## v1.2.0 新功能详解
-
-### Resources 支持
-
-MCP Resources 允许服务器暴露数据（文件、数据库记录等）供客户端读取。
-
-```python
-# 配置项
-settings = {
-    "enable_resources": True,  # 启用 Resources 支持（默认关闭）
-}
-
-# 新增数据类
-@dataclass
-class MCPResourceInfo:
-    uri: str                    # 资源 URI
-    name: str                   # 资源名称
-    description: str            # 资源描述
-    mime_type: Optional[str]    # MIME 类型
-    server_name: str            # 所属服务器
-
-# MCPClientSession 新增方法
-async def fetch_resources(self) -> bool:
-    """获取资源列表，返回是否成功（服务器不支持时返回 False）"""
-
-async def read_resource(self, uri: str) -> MCPCallResult:
-    """读取资源内容"""
-
-# MCPClientManager 新增方法
-async def read_resource(self, uri: str, server_name: Optional[str] = None) -> MCPCallResult:
-    """读取资源，可指定服务器或自动查找"""
-
-@property
-def all_resources(self) -> Dict[str, Tuple[MCPResourceInfo, MCPClientSession]]:
-    """获取所有已注册的资源"""
-```
-
-### Prompts 支持
-
-MCP Prompts 允许服务器提供预定义的提示模板。
-
-```python
-# 配置项
-settings = {
-    "enable_prompts": True,  # 启用 Prompts 支持（默认关闭）
-}
-
-# 新增数据类
-@dataclass
-class MCPPromptInfo:
-    name: str                           # 模板名称
-    description: str                    # 模板描述
-    arguments: List[Dict[str, Any]]     # 参数列表 [{name, description, required}]
-    server_name: str                    # 所属服务器
-
-# MCPClientSession 新增方法
-async def fetch_prompts(self) -> bool:
-    """获取提示模板列表"""
-
-async def get_prompt(self, name: str, arguments: Optional[Dict[str, str]] = None) -> MCPCallResult:
-    """获取提示模板内容"""
-
-# MCPClientManager 新增方法
-async def get_prompt(self, name: str, arguments: Optional[Dict[str, str]] = None, 
-                     server_name: Optional[str] = None) -> MCPCallResult:
-    """获取提示模板"""
-
-@property
-def all_prompts(self) -> Dict[str, Tuple[MCPPromptInfo, MCPClientSession]]:
-    """获取所有已注册的提示模板"""
-```
-
-### 新增工具
-
-```python
-# mcp_status 扩展了查询类型
-query_type = ["status", "tools", "resources", "prompts", "stats", "all"]
-
-# 新增操作工具
-class MCPReadResourceTool(BaseTool):
-    """读取资源内容"""
-    name = "mcp_read_resource"
-    parameters = [
-        ("uri", STRING, "资源 URI", True, None),
-        ("server_name", STRING, "服务器名称（可选）", False, None),
-    ]
-
-class MCPGetPromptTool(BaseTool):
-    """获取提示模板内容"""
-    name = "mcp_get_prompt"
-    parameters = [
-        ("name", STRING, "模板名称", True, None),
-        ("arguments", STRING, "模板参数（JSON 格式）", False, None),
-        ("server_name", STRING, "服务器名称（可选）", False, None),
-    ]
-```
-
-### 使用示例
-
-```
-用户: 列出可用的 MCP 资源
-LLM: [调用 mcp_status(query_type="resources")]
-
-📦 可用 MCP 资源
-🔌 filesystem (3 个资源):
-  • config.json
-    URI: file:///app/config.json
-    类型: application/json
-  ...
-
-用户: 读取 config.json
-LLM: [调用 mcp_read_resource(uri="file:///app/config.json")]
-{"debug": true, ...}
-```
-
-## 已知限制
-
-1. **参数类型限制**: MaiBot 的 `ToolParamType` 只支持 STRING, INTEGER, FLOAT, BOOLEAN，复杂类型（array, object）会转为 JSON 字符串
-2. **动态注册**: 工具在 ON_START 后动态注册，无法在 `get_plugin_components()` 中返回
-3. **WebUI 配置**: 服务器列表使用 JSON 编辑器，不支持可视化表单编辑
-
-## 贡献指南
-
-1. Fork 仓库
-2. 创建功能分支: `git checkout -b feature/xxx`
-3. 提交更改: `git commit -m "feat: xxx"`
-4. 推送分支: `git push origin feature/xxx`
-5. 创建 Pull Request
+- `mcp>=1.0.0` - MCP Python SDK
 
 ## 许可证
 
