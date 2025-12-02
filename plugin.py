@@ -11,11 +11,12 @@ from src.plugin_system import (
     BasePlugin,
     register_plugin,
     BaseTool,
+    BaseCommand,
     ComponentInfo,
     ConfigField,
     ToolParamType,
 )
-from src.plugin_system.base.component_types import ToolInfo, ComponentType, EventHandlerInfo, EventType
+from src.plugin_system.base.component_types import ToolInfo, CommandInfo, ComponentType, EventHandlerInfo, EventType
 from src.plugin_system.base.base_events_handler import BaseEventHandler
 
 from .mcp_client import (
@@ -379,6 +380,112 @@ class MCPStatusTool(BaseTool):
         return await self.execute(function_args)
 
 
+class MCPStatusCommand(BaseCommand):
+    """MCP 状态查询命令 - 通过 /mcp 命令查看服务器状态"""
+
+    command_name = "mcp_status_command"
+    command_description = "查看 MCP 服务器连接状态和统计信息"
+    command_pattern = r"^[/／]mcp(?:\s+(?P<subcommand>status|tools|stats|reconnect))?(?:\s+(?P<server>\S+))?$"
+
+    async def execute(self):
+        """执行命令"""
+        subcommand = self.matched_groups.get("subcommand", "status") or "status"
+        server_name = self.matched_groups.get("server")
+
+        if subcommand == "reconnect":
+            # 重连指定服务器或所有服务器
+            return await self._handle_reconnect(server_name)
+
+        # 查询状态
+        result = self._format_output(subcommand, server_name)
+        await self.send_text(result)
+        return (True, None, True)
+
+    async def _handle_reconnect(self, server_name: str = None):
+        """处理重连请求"""
+        if server_name:
+            # 重连指定服务器
+            if server_name not in mcp_manager._clients:
+                await self.send_text(f"❌ 服务器 {server_name} 不存在")
+                return (True, None, True)
+
+            await self.send_text(f"🔄 正在重连服务器 {server_name}...")
+            success = await mcp_manager.reconnect_server(server_name)
+            if success:
+                await self.send_text(f"✅ 服务器 {server_name} 重连成功")
+            else:
+                await self.send_text(f"❌ 服务器 {server_name} 重连失败")
+        else:
+            # 重连所有断开的服务器
+            disconnected = mcp_manager.disconnected_servers
+            if not disconnected:
+                await self.send_text("✅ 所有服务器都已连接")
+                return (True, None, True)
+
+            await self.send_text(f"🔄 正在重连 {len(disconnected)} 个断开的服务器...")
+            for srv in disconnected:
+                success = await mcp_manager.reconnect_server(srv)
+                status = "✅" if success else "❌"
+                await self.send_text(f"{status} {srv}")
+
+        return (True, None, True)
+
+    def _format_output(self, subcommand: str, server_name: str = None) -> str:
+        """格式化输出"""
+        status = mcp_manager.get_status()
+        stats = mcp_manager.get_all_stats()
+        lines = []
+
+        if subcommand in ("status", "all"):
+            lines.append("📊 MCP 桥接插件状态")
+            lines.append(f"├ 服务器: {status['connected_servers']}/{status['total_servers']} 已连接")
+            lines.append(f"├ 工具数: {status['total_tools']}")
+            lines.append(f"└ 心跳: {'运行中' if status['heartbeat_running'] else '已停止'}")
+
+            if status["servers"]:
+                lines.append("\n🔌 服务器列表:")
+                for name, info in status["servers"].items():
+                    if server_name and name != server_name:
+                        continue
+                    icon = "✅" if info["connected"] else "❌"
+                    enabled = "" if info["enabled"] else " (禁用)"
+                    lines.append(f"  {icon} {name}{enabled}")
+                    lines.append(f"     {info['transport']} | {info['tools_count']} 工具")
+                    if info["consecutive_failures"] > 0:
+                        lines.append(f"     ⚠️ 连续失败 {info['consecutive_failures']} 次")
+
+        if subcommand in ("tools", "all"):
+            tools = mcp_manager.all_tools
+            if tools:
+                lines.append("\n🔧 可用工具:")
+                by_server = {}
+                for key, (info, _) in tools.items():
+                    if server_name and info.server_name != server_name:
+                        continue
+                    by_server.setdefault(info.server_name, []).append(info.name)
+
+                for srv, tool_list in by_server.items():
+                    lines.append(f"  📦 {srv} ({len(tool_list)})")
+                    for t in tool_list[:5]:  # 最多显示5个
+                        lines.append(f"     • {t}")
+                    if len(tool_list) > 5:
+                        lines.append(f"     ... 还有 {len(tool_list) - 5} 个")
+
+        if subcommand in ("stats", "all"):
+            g = stats["global"]
+            lines.append("\n📈 调用统计:")
+            lines.append(f"  总调用: {g['total_tool_calls']}")
+            if g["total_tool_calls"] > 0:
+                rate = (g["successful_calls"] / g["total_tool_calls"]) * 100
+                lines.append(f"  成功率: {rate:.1f}%")
+            lines.append(f"  运行: {g['uptime_seconds']:.0f}秒")
+
+        if not lines:
+            lines.append("使用方法: /mcp [status|tools|stats|reconnect] [服务器名]")
+
+        return "\n".join(lines)
+
+
 class MCPStartupHandler(BaseEventHandler):
     """MCP 启动事件处理器
     
@@ -448,6 +555,7 @@ class MCPBridgePlugin(BasePlugin):
         "plugin": "插件基本信息",
         "settings": "全局设置",
         "servers": "MCP 服务器配置（支持多个服务器）",
+        "status": "运行状态（只读）",
     }
     
     # 配置 Schema 定义
@@ -553,27 +661,34 @@ class MCPBridgePlugin(BasePlugin):
         },
         "servers": {
             "list": ConfigField(
-                type=list,
-                default=[
-                    {
-                        "name": "example",
-                        "enabled": False,
-                        "transport": "http",
-                        "url": "https://example.com/mcp",
-                    }
-                ],
-                description="MCP 服务器列表配置（JSON 数组格式）",
+                type=str,
+                default="[]",
+                description="MCP 服务器列表配置（JSON 格式）",
                 label="🔌 服务器列表",
-                input_type="json",
-                hint="""每个服务器配置字段说明:
-• name: 服务器名称（唯一标识）
-• enabled: 是否启用 (true/false)
-• transport: 传输方式 (stdio/sse/http)
-• url: 服务器地址 (sse/http 模式)
-• command: 启动命令 (stdio 模式，如 npx/uvx)
-• args: 命令参数数组 (stdio 模式)
-• env: 环境变量对象 (stdio 模式，可选)""",
-                rows=20,
+                input_type="textarea",
+                placeholder='''[
+  {
+    "name": "howtocook",
+    "enabled": true,
+    "transport": "http",
+    "url": "https://mcp.example.com/mcp"
+  }
+]''',
+                hint="JSON 数组格式。字段: name(名称), enabled(启用), transport(stdio/sse/http), url(地址), command/args/env(stdio专用)",
+                rows=12,
+                order=1,
+            ),
+        },
+        "status": {
+            "connection_status": ConfigField(
+                type=str,
+                default="未初始化",
+                description="当前 MCP 服务器连接状态",
+                label="📊 连接状态",
+                input_type="textarea",
+                disabled=True,
+                rows=8,
+                hint="此状态仅在插件启动时更新。查询实时状态请发送 /mcp 命令",
                 order=1,
             ),
         },
@@ -669,6 +784,9 @@ class MCPBridgePlugin(BasePlugin):
         
         self._initialized = True
         logger.info(f"MCP 桥接插件初始化完成，已注册 {registered_count} 个工具")
+        
+        # 更新状态显示
+        self._update_status_display()
     
     def _parse_server_config(self, conf: Dict) -> MCPServerConfig:
         """解析服务器配置字典"""
@@ -693,10 +811,34 @@ class MCPBridgePlugin(BasePlugin):
             url=conf.get("url", ""),
         )
     
+    def _update_status_display(self) -> None:
+        """更新配置中的状态显示字段"""
+        status = mcp_manager.get_status()
+        lines = []
+        
+        # 概览
+        lines.append(f"服务器: {status['connected_servers']}/{status['total_servers']} 已连接")
+        lines.append(f"工具数: {status['total_tools']}")
+        lines.append(f"心跳: {'运行中' if status['heartbeat_running'] else '已停止'}")
+        lines.append("")
+        
+        # 服务器详情
+        for name, info in status.get("servers", {}).items():
+            icon = "✅" if info["connected"] else "❌"
+            lines.append(f"{icon} {name} ({info['transport']}) - {info['tools_count']} 工具")
+        
+        if not status.get("servers"):
+            lines.append("(无服务器)")
+        
+        # 更新配置
+        if "status" not in self.config:
+            self.config["status"] = {}
+        self.config["status"]["connection_status"] = "\n".join(lines)
+    
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
         """返回插件的所有组件
         
-        返回事件处理器和内置工具，MCP 工具会在 ON_START 事件后动态注册
+        返回事件处理器、命令和内置工具，MCP 工具会在 ON_START 事件后动态注册
         """
         components: List[Tuple[ComponentInfo, Type]] = []
         
@@ -708,7 +850,11 @@ class MCPBridgePlugin(BasePlugin):
         stop_handler_info = MCPStopHandler.get_handler_info()
         components.append((stop_handler_info, MCPStopHandler))
         
-        # 添加内置状态查询工具
+        # 添加 /mcp 状态查询命令
+        mcp_command_info = MCPStatusCommand.get_command_info()
+        components.append((mcp_command_info, MCPStatusCommand))
+        
+        # 添加内置状态查询工具（供 LLM 调用）
         status_tool_info = ToolInfo(
             name=MCPStatusTool.name,
             tool_description=MCPStatusTool.description,
