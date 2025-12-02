@@ -2,6 +2,28 @@
 # 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
 # 
 # 使用方法：复制此文件为 config.toml，然后根据需要修改配置
+#
+# ============================================================
+# 📚 如何获取 MCP 服务器？
+# ============================================================
+#
+# 【远程 MCP 服务（HTTP/SSE 方式）】
+#   - 魔搭 ModelScope: https://mcp.modelscope.cn/
+#     阿里云提供的 MCP 服务平台，有多种免费工具
+#   - Smithery: https://smithery.ai/
+#     MCP 服务器注册中心，可搜索各类 MCP 服务
+#   - Glama: https://glama.ai/mcp/servers
+#     MCP 服务器目录
+#
+# 【本地 MCP 服务（stdio 方式）】
+#   需要安装 Node.js (npx) 或 uv (uvx)
+#   - 官方服务器列表: https://github.com/modelcontextprotocol/servers
+#   - 常用服务:
+#     * npx @modelcontextprotocol/server-filesystem  (文件系统)
+#     * npx @modelcontextprotocol/server-github      (GitHub API)
+#     * uvx mcp-server-fetch                         (HTTP 请求)
+#
+# ============================================================
 
 # ============================================================
 # 插件基本信息

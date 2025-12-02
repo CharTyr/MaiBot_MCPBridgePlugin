@@ -222,25 +222,57 @@ MCP 工具在 MaiBot 中的名称格式为：
 2. 检测到断开后自动尝试重连
 3. 连续失败达到 `max_reconnect_attempts` 次后暂停重连
 
-## 已测试的 MCP 服务器
+## 如何获取 MCP 服务器
 
-### HowToCook 菜谱服务器
+MCP 服务器有两种类型：**远程托管服务** 和 **本地运行服务**。
+
+### 远程 MCP 服务（HTTP/SSE 方式）
+
+以下平台提供免费或付费的远程 MCP 服务：
+
+| 平台 | 说明 | 链接 |
+|------|------|------|
+| **魔搭 ModelScope** | 阿里云提供的 MCP 服务平台，有多种免费工具 | [mcp.modelscope.cn](https://mcp.modelscope.cn/) |
+| **Smithery** | MCP 服务器注册中心，可搜索各类 MCP 服务 | [smithery.ai](https://smithery.ai/) |
+| **Glama** | MCP 服务器目录 | [glama.ai/mcp/servers](https://glama.ai/mcp/servers) |
+
+使用远程服务时，复制服务提供的 URL 填入配置即可：
 
 ```json
 {
-  "name": "howtocook",
+  "name": "your-service",
   "enabled": true,
   "transport": "http",
-  "url": "https://mcp.api-inference.modelscope.net/今天吃什么"
+  "url": "https://从平台获取的MCP服务地址"
 }
 ```
 
-提供的工具：
-- `mcp_howtocook_getAllRecipes` - 获取所有菜谱
-- `mcp_howtocook_getRecipesByCategory` - 按分类查询菜谱
-- `mcp_howtocook_getRecipeById` - 查询菜谱详情
-- `mcp_howtocook_whatToEat` - 今天吃什么推荐
-- `mcp_howtocook_recommendMeals` - 智能膳食计划推荐
+### 本地 MCP 服务（stdio 方式）
+
+可以在本地运行 MCP 服务器，常见的有：
+
+| 服务 | 安装命令 | 说明 |
+|------|----------|------|
+| **Filesystem** | `npx @modelcontextprotocol/server-filesystem` | 文件系统操作 |
+| **GitHub** | `npx @modelcontextprotocol/server-github` | GitHub API |
+| **Brave Search** | `npx @modelcontextprotocol/server-brave-search` | 网页搜索 |
+| **Fetch** | `uvx mcp-server-fetch` | HTTP 请求 |
+
+更多官方服务器：[github.com/modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers)
+
+本地服务配置示例：
+
+```json
+{
+  "name": "filesystem",
+  "enabled": true,
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+}
+```
+
+> 💡 提示：使用 `npx` 需要安装 Node.js，使用 `uvx` 需要安装 [uv](https://docs.astral.sh/uv/)。
 
 ## 依赖
 
