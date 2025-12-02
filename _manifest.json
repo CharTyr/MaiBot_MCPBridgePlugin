@@ -19,6 +19,10 @@
     "tool",
     "integration"
   ],
+  "categories": [
+    "工具扩展",
+    "外部集成"
+  ],
   "default_locale": "zh-CN",
   "plugin_info": {
     "is_built_in": false,
