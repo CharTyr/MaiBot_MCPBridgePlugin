@@ -1374,20 +1374,19 @@ class MCPBridgePlugin(BasePlugin):
 2. 将 enabled 改为 true 启用服务器
 3. 重启 MaiBot 或发送 /mcp reconnect
 
-📚 去哪找 MCP 服务器？
-• ModelScope: mcp.modelscope.cn (推荐，免费)
+📝 配置示例（复制到服务器列表）：
+
+【远程服务器】(推荐新手)
+{"name": "time", "enabled": true, "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}
+
+【本地服务器】(需要 uvx)
+{"name": "fetch", "enabled": true, "transport": "stdio", "command": "uvx", "args": ["mcp-server-fetch"]}
+
+📚 去哪找更多服务器？
+• ModelScope: mcp.modelscope.cn
 • Smithery: smithery.ai
-• 官方列表: github.com/modelcontextprotocol/servers
 
-💡 常用命令：
-• /mcp - 查看连接状态
-• /mcp tools - 查看可用工具
-• /mcp reconnect - 重连服务器
-
-❓ 遇到问题？
-• 检查服务器 URL 是否正确
-• 查看 MaiBot 日志中的错误信息
-• stdio 类型需要安装 npx 或 uvx""",
+💡 常用命令：/mcp status | tools | reconnect""",
                 description="新手快速入门指南",
                 label="📖 快速入门指南",
                 input_type="textarea",
