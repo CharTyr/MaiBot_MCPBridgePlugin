@@ -282,11 +282,24 @@ class PermissionChecker:
         self._enabled = False
         self._default_mode = "allow_all"  # allow_all 或 deny_all
         self._rules: List[Dict] = []
+        self._quick_deny_groups: set = set()
+        self._quick_allow_users: set = set()
     
-    def configure(self, enabled: bool, default_mode: str, rules_json: str):
+    def configure(
+        self,
+        enabled: bool,
+        default_mode: str,
+        rules_json: str,
+        quick_deny_groups: str = "",
+        quick_allow_users: str = "",
+    ):
         """配置权限检查器"""
         self._enabled = enabled
         self._default_mode = default_mode if default_mode in ("allow_all", "deny_all") else "allow_all"
+        
+        # 解析快捷配置
+        self._quick_deny_groups = {g.strip() for g in quick_deny_groups.strip().split("\n") if g.strip()}
+        self._quick_allow_users = {u.strip() for u in quick_allow_users.strip().split("\n") if u.strip()}
         
         try:
             self._rules = json.loads(rules_json) if rules_json.strip() else []
@@ -308,6 +321,15 @@ class PermissionChecker:
         """
         if not self._enabled:
             return True
+        
+        # 快捷配置优先级最高
+        # 1. 管理员白名单（始终允许）
+        if user_id and user_id in self._quick_allow_users:
+            return True
+        
+        # 2. 禁用群列表（始终拒绝）
+        if is_group and chat_id and chat_id in self._quick_deny_groups:
+            return False
         
         # 查找匹配的规则
         for rule in self._rules:
@@ -1201,7 +1223,14 @@ class MCPStatusCommand(BaseCommand):
             lines = ["🔐 权限控制配置"]
             lines.append(f"├ 启用: {'是' if enabled else '否'}")
             lines.append(f"├ 默认模式: {default_mode}")
-            lines.append(f"└ 规则数: {len(permission_checker._rules)}")
+            # 快捷配置
+            deny_count = len(permission_checker._quick_deny_groups)
+            allow_count = len(permission_checker._quick_allow_users)
+            if deny_count > 0:
+                lines.append(f"├ 禁用群: {deny_count} 个")
+            if allow_count > 0:
+                lines.append(f"├ 管理员白名单: {allow_count} 人")
+            lines.append(f"└ 高级规则: {len(permission_checker._rules)} 条")
             await self.send_text("\n".join(lines))
         
         return (True, None, True)
@@ -1326,15 +1355,47 @@ class MCPBridgePlugin(BasePlugin):
     config_file_name: str = "config.toml"
     
     config_section_descriptions = {
-        "plugin": "插件基本信息",
-        "settings": "全局设置",
-        "servers": "MCP 服务器配置",
-        "tools": "工具管理",
-        "permissions": "权限控制",
-        "status": "运行状态（只读）",
+        "guide": "📖 快速入门",
+        "servers": "🔌 服务器配置",
+        "status": "📊 运行状态",
+        "plugin": "插件开关",
+        "settings": "⚙️ 高级设置",
+        "tools": "🔧 工具管理",
+        "permissions": "🔐 权限控制",
     }
     
     config_schema: dict = {
+        # 新手引导区（只读）
+        "guide": {
+            "quick_start": ConfigField(
+                type=str,
+                default="""🎯 三步开始使用：
+1. 在下方「服务器配置」添加 MCP 服务器
+2. 将 enabled 改为 true 启用服务器
+3. 重启 MaiBot 或发送 /mcp reconnect
+
+📚 去哪找 MCP 服务器？
+• ModelScope: mcp.modelscope.cn (推荐，免费)
+• Smithery: smithery.ai
+• 官方列表: github.com/modelcontextprotocol/servers
+
+💡 常用命令：
+• /mcp - 查看连接状态
+• /mcp tools - 查看可用工具
+• /mcp reconnect - 重连服务器
+
+❓ 遇到问题？
+• 检查服务器 URL 是否正确
+• 查看 MaiBot 日志中的错误信息
+• stdio 类型需要安装 npx 或 uvx""",
+                description="新手快速入门指南",
+                label="📖 快速入门指南",
+                input_type="textarea",
+                disabled=True,
+                rows=18,
+                order=1,
+            ),
+        },
         "plugin": {
             "enabled": ConfigField(
                 type=bool,
@@ -1597,33 +1658,43 @@ class MCPBridgePlugin(BasePlugin):
                 description="默认模式：allow_all（默认允许）或 deny_all（默认禁止）",
                 label="📋 默认模式",
                 placeholder="allow_all",
-                hint="allow_all: 未配置规则的工具默认允许；deny_all: 未配置规则的工具默认禁止",
+                hint="allow_all: 未配置的默认允许；deny_all: 未配置的默认禁止",
                 order=2,
             ),
+            # 快捷配置（简化版）
+            "quick_deny_groups": ConfigField(
+                type=str,
+                default="",
+                description="禁止使用所有 MCP 工具的群号（每行一个）",
+                label="🚫 禁用群列表（快捷）",
+                input_type="textarea",
+                rows=4,
+                hint="填入群号，该群将无法使用任何 MCP 工具",
+                order=3,
+            ),
+            "quick_allow_users": ConfigField(
+                type=str,
+                default="",
+                description="始终允许使用所有工具的用户 QQ 号（管理员白名单，每行一个）",
+                label="✅ 管理员白名单（快捷）",
+                input_type="textarea",
+                rows=3,
+                hint="填入 QQ 号，该用户在任何场景都可使用 MCP 工具",
+                order=4,
+            ),
+            # 高级配置
             "perm_rules": ConfigField(
                 type=str,
                 default="[]",
-                description="权限规则（JSON 数组格式）",
-                label="📜 权限规则",
+                description="高级权限规则（JSON 格式，可针对特定工具配置）",
+                label="📜 高级权限规则（可选）",
                 input_type="textarea",
-                rows=12,
+                rows=10,
                 placeholder='''[
-  {
-    "tool": "mcp_filesystem_*",
-    "mode": "whitelist",
-    "allowed": ["qq:123456789:group", "qq:111111:user"]
-  },
-  {
-    "tool": "mcp_bing_*",
-    "denied": ["qq:987654321:group"]
-  }
+  {"tool": "mcp_*_delete_*", "denied": ["qq:123456:group"]}
 ]''',
-                hint="""ID 格式：qq:ID:type
-• qq:123456:group - QQ群
-• qq:123456:private - 私聊
-• qq:123456:user - 特定用户（任何场景生效）
-工具名支持通配符 *""",
-                order=3,
+                hint="格式: qq:ID:group/private/user，工具名支持通配符 *",
+                order=10,
             ),
         },
         "servers": {
@@ -1702,6 +1773,8 @@ class MCPBridgePlugin(BasePlugin):
             enabled=perm_config.get("perm_enabled", False),
             default_mode=perm_config.get("perm_default_mode", "allow_all"),
             rules_json=perm_config.get("perm_rules", "[]"),
+            quick_deny_groups=perm_config.get("quick_deny_groups", ""),
+            quick_allow_users=perm_config.get("quick_allow_users", ""),
         )
         
         # 注册状态变化回调
