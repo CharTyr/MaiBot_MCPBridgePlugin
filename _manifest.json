@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "MCP桥接插件",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具",
   "author": {
     "name": "CharTyr",
