@@ -703,6 +703,9 @@ class MCPBridgePlugin(BasePlugin):
         # 配置 MCP 管理器
         settings = self.config.get("settings", {})
         mcp_manager.configure(settings)
+        
+        # 注册状态变化回调，实时更新 WebUI 显示
+        mcp_manager.set_status_change_callback(self._update_status_display)
     
     async def _async_connect_servers(self) -> None:
         """异步连接所有配置的 MCP 服务器"""

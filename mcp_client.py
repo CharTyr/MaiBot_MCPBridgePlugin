@@ -530,6 +530,9 @@ class MCPClientManager:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._heartbeat_running = False
         
+        # 状态变化回调
+        self._on_status_change: Optional[callable] = None
+        
         # 全局统计
         self._global_stats = {
             "total_tool_calls": 0,
@@ -541,6 +544,18 @@ class MCPClientManager:
     def configure(self, settings: Dict[str, Any]) -> None:
         """配置管理器"""
         self._settings = settings
+    
+    def set_status_change_callback(self, callback: callable) -> None:
+        """设置状态变化回调函数"""
+        self._on_status_change = callback
+    
+    def _notify_status_change(self) -> None:
+        """通知状态变化"""
+        if self._on_status_change:
+            try:
+                self._on_status_change()
+            except Exception as e:
+                logger.debug(f"状态变化回调出错: {e}")
     
     @property
     def all_tools(self) -> Dict[str, Tuple[MCPToolInfo, MCPClientSession]]:
@@ -732,6 +747,7 @@ class MCPClientManager:
                         healthy = await client.check_health()
                         if not healthy:
                             logger.warning(f"[{server_name}] 心跳检测失败，连接可能已断开")
+                            self._notify_status_change()  # 状态变化
                             if auto_reconnect:
                                 await self._try_reconnect(server_name, max_reconnect_attempts)
                     else:
@@ -764,6 +780,7 @@ class MCPClientManager:
         if not success:
             client.stats.record_failure()
         
+        self._notify_status_change()  # 重连后更新状态
         return success
 
     # ==================== 统计和状态 ====================
