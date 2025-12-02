@@ -850,22 +850,37 @@ class MCPBridgePlugin(BasePlugin):
         "servers": {
             "list": ConfigField(
                 type=str,
-                default="[]",
+                default='''[
+  {
+    "name": "time-mcp-server",
+    "enabled": false,
+    "transport": "streamable_http",
+    "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
+  },
+  {
+    "name": "fetch-local",
+    "enabled": false,
+    "transport": "stdio",
+    "command": "uvx",
+    "args": ["mcp-server-fetch"]
+  }
+]''',
                 description="MCP 服务器列表配置（JSON 数组格式，必须以 [ 开头，以 ] 结尾）",
                 label="🔌 服务器列表",
                 input_type="textarea",
                 placeholder='''[
   {
-    "name": "server1",
+    "name": "remote-example",
     "enabled": true,
     "transport": "streamable_http",
     "url": "https://mcp.example.com/mcp"
   },
   {
-    "name": "server2",
+    "name": "local-example",
     "enabled": true,
-    "transport": "http",
-    "url": "https://another.example.com/mcp"
+    "transport": "stdio",
+    "command": "uvx",
+    "args": ["mcp-server-xxx"]
   }
 ]''',
                 hint="""⚠️ 格式要求：必须是 JSON 数组！
@@ -875,8 +890,9 @@ class MCPBridgePlugin(BasePlugin):
 • transport 可选: stdio / sse / http / streamable_http
 • stdio 类型需要 command/args/env 字段，其他类型需要 url 字段
 ❌ 错误示例: { "name": "a" }, { "name": "b" }  ← 缺少外层 [ ]
-✅ 正确示例: [{ "name": "a" }, { "name": "b" }]""",
-                rows=14,
+✅ 正确示例: [{ "name": "a" }, { "name": "b" }]
+💡 默认示例已禁用(enabled=false)，修改后启用即可使用""",
+                rows=18,
                 order=1,
             ),
         },
