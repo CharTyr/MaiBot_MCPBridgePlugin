@@ -29,8 +29,8 @@
 # ============================================================
 [plugin]
 name = "mcp_bridge_plugin"
-version = "1.4.1"
-config_version = "1.4.1"
+version = "1.4.2"
+config_version = "1.4.2"
 enabled = true
 
 # ============================================================
@@ -220,10 +220,11 @@ perm_rules = "[]"
 #   enabled   - 是否启用 (true/false)
 #   transport - 传输方式: "stdio" / "sse" / "http" / "streamable_http"
 #   url       - 服务器地址（sse/http/streamable_http 模式必填）
+#   headers   - 🆕 鉴权头（可选，如 {"Authorization": "Bearer xxx"}）
 #   command   - 启动命令（stdio 模式，如 "npx" 或 "uvx"）
 #   args      - 命令参数数组（stdio 模式）
 #   env       - 环境变量对象（stdio 模式，可选）
-#   post_process - 服务器级别后处理配置（可选，覆盖全局配置）
+#   post_process - 服务器级别后处理配置（可选）
 #
 # ============================================================
 
@@ -235,6 +236,15 @@ list = '''
     "enabled": false,
     "transport": "streamable_http",
     "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
+  },
+  {
+    "name": "my-auth-server",
+    "enabled": false,
+    "transport": "streamable_http",
+    "url": "https://mcp.api-inference.modelscope.net/xxxxxx/mcp",
+    "headers": {
+      "Authorization": "Bearer ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    }
   },
   {
     "name": "fetch-local",

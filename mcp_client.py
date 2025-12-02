@@ -81,8 +81,9 @@ class MCPServerConfig:
     command: str = ""
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
-    # http 配置
+    # http/sse 配置
     url: str = ""
+    headers: Dict[str, str] = field(default_factory=dict)  # v1.4.2: 鉴权头支持
 
 
 @dataclass
@@ -332,11 +333,16 @@ class MCPClientSession:
             
             logger.debug(f"[{self.server_name}] 正在连接 SSE MCP 服务器: {self.config.url}")
             
-            self._sse_context = sse_client(
-                url=self.config.url,
-                timeout=60.0,
-                sse_read_timeout=300.0,
-            )
+            # v1.4.2: 支持 headers 鉴权
+            sse_kwargs = {
+                "url": self.config.url,
+                "timeout": 60.0,
+                "sse_read_timeout": 300.0,
+            }
+            if self.config.headers:
+                sse_kwargs["headers"] = self.config.headers
+            
+            self._sse_context = sse_client(**sse_kwargs)
             self._read_stream, self._write_stream = await self._sse_context.__aenter__()
             
             self._session_context = ClientSession(self._read_stream, self._write_stream)
@@ -372,11 +378,16 @@ class MCPClientSession:
             
             logger.debug(f"[{self.server_name}] 正在连接 HTTP MCP 服务器: {self.config.url}")
             
-            self._http_context = streamablehttp_client(
-                url=self.config.url,
-                timeout=60.0,
-                sse_read_timeout=300.0,
-            )
+            # v1.4.2: 支持 headers 鉴权
+            http_kwargs = {
+                "url": self.config.url,
+                "timeout": 60.0,
+                "sse_read_timeout": 300.0,
+            }
+            if self.config.headers:
+                http_kwargs["headers"] = self.config.headers
+            
+            self._http_context = streamablehttp_client(**http_kwargs)
             self._read_stream, self._write_stream, self._get_session_id = await self._http_context.__aenter__()
             
             self._session_context = ClientSession(self._read_stream, self._write_stream)

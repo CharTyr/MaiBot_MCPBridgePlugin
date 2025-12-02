@@ -1376,17 +1376,17 @@ class MCPBridgePlugin(BasePlugin):
 
 📝 配置示例（复制到服务器列表）：
 
-【远程服务器】(推荐新手)
+【免费服务器】
 {"name": "time", "enabled": true, "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}
+
+【带鉴权的服务器】
+{"name": "my-server", "enabled": true, "transport": "streamable_http", "url": "https://mcp.xxx.com/mcp", "headers": {"Authorization": "Bearer 你的密钥"}}
 
 【本地服务器】(需要 uvx)
 {"name": "fetch", "enabled": true, "transport": "stdio", "command": "uvx", "args": ["mcp-server-fetch"]}
 
-📚 去哪找更多服务器？
-• ModelScope: mcp.modelscope.cn
-• Smithery: smithery.ai
-
-💡 常用命令：/mcp status | tools | reconnect""",
+📚 获取服务器: mcp.modelscope.cn | smithery.ai
+💡 命令: /mcp status | tools | reconnect""",
                 description="新手快速入门指南",
                 label="📖 快速入门指南",
                 input_type="textarea",
@@ -1934,6 +1934,7 @@ class MCPBridgePlugin(BasePlugin):
             args=conf.get("args", []),
             env=conf.get("env", {}),
             url=conf.get("url", ""),
+            headers=conf.get("headers", {}),  # v1.4.2: 鉴权头支持
         )
     
     def _update_tool_list_display(self) -> None:

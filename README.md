@@ -25,9 +25,14 @@ cp config.example.toml config.toml
 
 编辑 `config.toml`，在 `[servers]` 的 `list` 中添加服务器：
 
-**远程服务器（推荐新手）：**
+**免费服务器：**
 ```json
 {"name": "time", "enabled": true, "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}
+```
+
+**带鉴权的服务器（v1.4.2）：**
+```json
+{"name": "my-server", "enabled": true, "transport": "streamable_http", "url": "https://mcp.xxx.com/mcp", "headers": {"Authorization": "Bearer 你的密钥"}}
 ```
 
 **本地服务器（需要 uvx）：**
@@ -106,6 +111,7 @@ cp config.example.toml config.toml
 | `enabled` | 是否启用 |
 | `transport` | `stdio` / `sse` / `http` / `streamable_http` |
 | `url` | 远程服务器地址 |
+| `headers` | 🆕 鉴权头（如 `{"Authorization": "Bearer xxx"}`） |
 | `command` / `args` | 本地服务器启动命令 |
 
 ### 权限控制（v1.4.0）
