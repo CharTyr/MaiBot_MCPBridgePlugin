@@ -749,23 +749,31 @@ class MCPBridgePlugin(BasePlugin):
         tool_prefix = settings.get("tool_prefix", "mcp")
         registered_count = 0
         
-        for server_conf in servers_config:
+        logger.info(f"准备连接 {len(servers_config)} 个 MCP 服务器")
+        
+        for idx, server_conf in enumerate(servers_config):
+            server_name = server_conf.get("name", f"unknown_{idx}")
+            logger.info(f"[{idx+1}/{len(servers_config)}] 处理服务器: {server_name}")
+            
             if not server_conf.get("enabled", True):
-                logger.info(f"服务器 {server_conf.get('name', 'unknown')} 已禁用，跳过")
+                logger.info(f"服务器 {server_name} 已禁用，跳过")
                 continue
             
             # 解析服务器配置
             try:
                 config = self._parse_server_config(server_conf)
             except Exception as e:
-                logger.error(f"解析服务器配置失败: {e}")
+                logger.error(f"解析服务器 {server_name} 配置失败: {e}")
                 continue
             
             # 添加服务器
+            logger.info(f"正在连接服务器: {config.name} ({config.transport.value})")
             success = await mcp_manager.add_server(config)
             if not success:
-                logger.warning(f"服务器 {config.name} 连接失败")
+                logger.warning(f"服务器 {config.name} 连接失败，继续处理下一个")
                 continue
+            
+            logger.info(f"服务器 {config.name} 连接成功")
             
             # 动态注册工具到组件系统
             from src.plugin_system.core.component_registry import component_registry

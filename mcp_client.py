@@ -600,7 +600,8 @@ class MCPClientManager:
                     logger.warning(f"服务器 {config.name} 连接失败，{retry_interval}秒后重试 ({attempt}/{retry_attempts})")
                     await asyncio.sleep(retry_interval)
             
-            logger.error(f"服务器 {config.name} 连接失败，已达最大重试次数")
+            logger.error(f"服务器 {config.name} 连接失败，已达最大重试次数 ({retry_attempts})")
+            # 连接失败，但保留在 _clients 中以便后续重连
             return False
     
     def _register_tools(self, client: MCPClientSession) -> None:
