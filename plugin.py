@@ -683,11 +683,11 @@ class MCPBridgePlugin(BasePlugin):
             "connection_status": ConfigField(
                 type=str,
                 default="未初始化",
-                description="当前 MCP 服务器连接状态",
+                description="当前 MCP 服务器连接状态和工具列表",
                 label="📊 连接状态",
                 input_type="textarea",
                 disabled=True,
-                rows=8,
+                rows=15,
                 hint="此状态仅在插件启动时更新。查询实时状态请发送 /mcp 命令",
                 order=1,
             ),
@@ -812,7 +812,10 @@ class MCPBridgePlugin(BasePlugin):
         )
     
     def _update_status_display(self) -> None:
-        """更新配置中的状态显示字段"""
+        """更新配置文件中的状态显示字段"""
+        import tomlkit
+        from pathlib import Path
+        
         status = mcp_manager.get_status()
         lines = []
         
@@ -822,18 +825,47 @@ class MCPBridgePlugin(BasePlugin):
         lines.append(f"心跳: {'运行中' if status['heartbeat_running'] else '已停止'}")
         lines.append("")
         
-        # 服务器详情
+        # 服务器详情和工具列表
+        tools = mcp_manager.all_tools
         for name, info in status.get("servers", {}).items():
             icon = "✅" if info["connected"] else "❌"
-            lines.append(f"{icon} {name} ({info['transport']}) - {info['tools_count']} 工具")
+            lines.append(f"{icon} {name} ({info['transport']})")
+            
+            # 列出该服务器的工具
+            server_tools = [t.name for key, (t, _) in tools.items() if t.server_name == name]
+            if server_tools:
+                for tool_name in server_tools:
+                    lines.append(f"   • {tool_name}")
+            else:
+                lines.append("   (无工具)")
         
         if not status.get("servers"):
             lines.append("(无服务器)")
         
-        # 更新配置
+        status_text = "\n".join(lines)
+        
+        # 更新内存中的配置
         if "status" not in self.config:
             self.config["status"] = {}
-        self.config["status"]["connection_status"] = "\n".join(lines)
+        self.config["status"]["connection_status"] = status_text
+        
+        # 写入配置文件
+        try:
+            config_path = Path(__file__).parent / "config.toml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    doc = tomlkit.load(f)
+                
+                if "status" not in doc:
+                    doc["status"] = tomlkit.table()
+                doc["status"]["connection_status"] = status_text
+                
+                with open(config_path, "w", encoding="utf-8") as f:
+                    tomlkit.dump(doc, f)
+                
+                logger.debug("已更新配置文件中的状态显示")
+        except Exception as e:
+            logger.warning(f"更新配置文件状态失败: {e}")
     
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
         """返回插件的所有组件
