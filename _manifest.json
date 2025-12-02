@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "MCP桥接插件",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具",
   "author": {
     "name": "CharTyr",
@@ -20,7 +20,10 @@
     "integration",
     "resources",
     "prompts",
-    "post-process"
+    "post-process",
+    "cache",
+    "trace",
+    "permissions"
   ],
   "categories": [
     "工具扩展",
@@ -40,7 +43,11 @@
       "WebUI 配置支持",
       "Resources 支持（实验性）",
       "Prompts 支持（实验性）",
-      "结果后处理（LLM 摘要提炼）"
+      "结果后处理（LLM 摘要提炼）",
+      "工具禁用管理",
+      "调用链路追踪",
+      "工具调用缓存（LRU）",
+      "工具权限控制（群/用户级别）"
     ]
   },
   "id": "MaiBot Community.MCPBridgePlugin"
