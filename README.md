@@ -92,21 +92,23 @@ cp config.example.toml config.toml
 
 ### 服务器配置
 
-在 `config.toml` 中使用 JSON 格式配置服务器列表：
+在 `config.toml` 中使用 JSON 格式配置服务器列表（用三个单引号包裹多行 JSON）：
 
 ```toml
 [servers]
 list = '''
 [
   {
-    "name": "howtocook",
+    "name": "my-server",
     "enabled": true,
     "transport": "http",
-    "url": "https://mcp.api-inference.modelscope.net/今天吃什么/mcp"
+    "url": "https://your-mcp-server.com/mcp"
   }
 ]
 '''
 ```
+
+> 注意：TOML 中用 `'''` 三个单引号包裹多行字符串，这样 JSON 中的双引号不需要转义。
 
 | 配置项 | 类型 | 说明 |
 |--------|------|------|
