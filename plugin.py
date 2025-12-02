@@ -851,19 +851,32 @@ class MCPBridgePlugin(BasePlugin):
             "list": ConfigField(
                 type=str,
                 default="[]",
-                description="MCP 服务器列表配置（JSON 格式）",
+                description="MCP 服务器列表配置（JSON 数组格式，必须以 [ 开头，以 ] 结尾）",
                 label="🔌 服务器列表",
                 input_type="textarea",
                 placeholder='''[
   {
-    "name": "howtocook",
+    "name": "server1",
+    "enabled": true,
+    "transport": "streamable_http",
+    "url": "https://mcp.example.com/mcp"
+  },
+  {
+    "name": "server2",
     "enabled": true,
     "transport": "http",
-    "url": "https://mcp.example.com/mcp"
+    "url": "https://another.example.com/mcp"
   }
 ]''',
-                hint="JSON 数组格式。字段: name(名称), enabled(启用), transport(stdio/sse/http), url(地址), command/args/env(stdio专用)",
-                rows=12,
+                hint="""⚠️ 格式要求：必须是 JSON 数组！
+• 整个配置必须用 [ ] 包裹
+• 多个服务器之间用逗号分隔
+• 每个服务器是一个 { } 对象
+• transport 可选: stdio / sse / http / streamable_http
+• stdio 类型需要 command/args/env 字段，其他类型需要 url 字段
+❌ 错误示例: { "name": "a" }, { "name": "b" }  ← 缺少外层 [ ]
+✅ 正确示例: [{ "name": "a" }, { "name": "b" }]""",
+                rows=14,
                 order=1,
             ),
         },
@@ -914,13 +927,7 @@ class MCPBridgePlugin(BasePlugin):
             if isinstance(servers_list, str):
                 # JSON 字符串格式，需要解析
                 logger.debug(f"servers.list 原始内容长度: {len(servers_list)}")
-                try:
-                    servers_config = json.loads(servers_list) if servers_list.strip() else []
-                    logger.info(f"从 JSON 字符串解析到 {len(servers_config)} 个服务器配置")
-                except json.JSONDecodeError as e:
-                    logger.error(f"解析服务器配置 JSON 失败: {e}")
-                    logger.error(f"JSON 内容前 200 字符: {servers_list[:200]}")
-                    servers_config = []
+                servers_config = self._parse_servers_json(servers_list)
             elif isinstance(servers_list, list):
                 servers_config = servers_list
                 logger.info(f"从 list 类型获取到 {len(servers_config)} 个服务器配置")
@@ -1009,6 +1016,72 @@ class MCPBridgePlugin(BasePlugin):
         
         # 更新状态显示
         self._update_status_display()
+    
+    def _parse_servers_json(self, servers_list: str) -> List[Dict]:
+        """解析服务器列表 JSON 字符串，包含防呆逻辑
+        
+        常见错误格式及修复:
+        1. 缺少外层数组括号: { "name": "a" }, { "name": "b" } -> 自动包裹为数组
+        2. 单个对象未包裹: { "name": "a" } -> 自动包裹为数组
+        3. JSON 语法错误: 给出详细错误提示
+        """
+        if not servers_list.strip():
+            return []
+        
+        content = servers_list.strip()
+        
+        try:
+            parsed = json.loads(content)
+            # 解析成功，检查是否为数组
+            if isinstance(parsed, list):
+                logger.info(f"从 JSON 字符串解析到 {len(parsed)} 个服务器配置")
+                return parsed
+            elif isinstance(parsed, dict):
+                # 单个对象，自动包裹为数组
+                logger.warning("服务器配置是单个对象而非数组，已自动转换为数组格式")
+                logger.warning("建议: 请将配置改为 JSON 数组格式，用 [ ] 包裹")
+                return [parsed]
+            else:
+                logger.error(f"服务器配置格式错误: 期望数组或对象，得到 {type(parsed).__name__}")
+                return []
+        except json.JSONDecodeError as e:
+            # JSON 解析失败，尝试智能修复
+            logger.warning(f"JSON 解析失败: {e}")
+            
+            # 检测常见错误: 多个对象未包裹在数组中
+            # 例如: { "name": "a" }, { "name": "b" }
+            if content.startswith("{") and not content.startswith("["):
+                logger.warning("检测到可能缺少外层数组括号 [ ]，尝试自动修复...")
+                try:
+                    fixed_content = f"[{content}]"
+                    parsed = json.loads(fixed_content)
+                    if isinstance(parsed, list):
+                        logger.warning(f"✅ 自动修复成功！解析到 {len(parsed)} 个服务器配置")
+                        logger.warning("⚠️ 请修正配置: 服务器列表必须用 [ ] 包裹成 JSON 数组")
+                        logger.warning("   错误格式: {{ \"name\": \"a\" }}, {{ \"name\": \"b\" }}")
+                        logger.warning("   正确格式: [{{ \"name\": \"a\" }}, {{ \"name\": \"b\" }}]")
+                        return parsed
+                except json.JSONDecodeError:
+                    pass  # 修复失败，继续报错
+            
+            # 无法修复，输出详细错误信息
+            logger.error("❌ 服务器配置 JSON 格式错误，无法解析")
+            logger.error(f"   错误位置: 第 {e.lineno} 行，第 {e.colno} 列")
+            logger.error(f"   错误原因: {e.msg}")
+            logger.error("   配置内容预览:")
+            # 显示前几行帮助定位问题
+            lines = content.split("\n")[:5]
+            for i, line in enumerate(lines, 1):
+                logger.error(f"   {i}: {line[:80]}{'...' if len(line) > 80 else ''}")
+            if len(content.split("\n")) > 5:
+                logger.error("   ...")
+            logger.error("")
+            logger.error("💡 正确格式示例:")
+            logger.error('   [')
+            logger.error('     { "name": "server1", "enabled": true, "transport": "http", "url": "https://..." },')
+            logger.error('     { "name": "server2", "enabled": true, "transport": "streamable_http", "url": "https://..." }')
+            logger.error('   ]')
+            return []
     
     def _parse_server_config(self, conf: Dict) -> MCPServerConfig:
         """解析服务器配置字典"""
