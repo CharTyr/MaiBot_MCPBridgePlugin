@@ -722,18 +722,27 @@ class MCPBridgePlugin(BasePlugin):
         if isinstance(servers_section, dict):
             # WebUI 格式
             servers_list = servers_section.get("list", [])
+            logger.debug(f"servers.list 类型: {type(servers_list).__name__}")
             if isinstance(servers_list, str):
                 # JSON 字符串格式，需要解析
+                logger.debug(f"servers.list 原始内容长度: {len(servers_list)}")
                 try:
                     servers_config = json.loads(servers_list) if servers_list.strip() else []
+                    logger.info(f"从 JSON 字符串解析到 {len(servers_config)} 个服务器配置")
                 except json.JSONDecodeError as e:
                     logger.error(f"解析服务器配置 JSON 失败: {e}")
+                    logger.error(f"JSON 内容前 200 字符: {servers_list[:200]}")
                     servers_config = []
-            else:
+            elif isinstance(servers_list, list):
                 servers_config = servers_list
+                logger.info(f"从 list 类型获取到 {len(servers_config)} 个服务器配置")
+            else:
+                logger.warning(f"servers.list 类型不支持: {type(servers_list).__name__}")
+                servers_config = []
         else:
             # TOML 数组格式
             servers_config = servers_section
+            logger.info(f"从 TOML 数组获取到 {len(servers_config)} 个服务器配置")
         
         if not servers_config:
             logger.warning("未配置任何 MCP 服务器")
