@@ -7,6 +7,11 @@ v1.1.0 新增功能:
 - 心跳检测
 - 自动重连
 - 更好的错误处理
+
+v1.2.0 新增功能:
+- Resources 支持（资源读取）
+- Prompts 支持（提示模板）
+- 新增配置项: enable_resources, enable_prompts
 """
 
 import asyncio
@@ -44,6 +49,25 @@ class MCPToolInfo:
     name: str
     description: str
     input_schema: Dict[str, Any]
+    server_name: str
+
+
+@dataclass
+class MCPResourceInfo:
+    """MCP 资源信息"""
+    uri: str
+    name: str
+    description: str
+    mime_type: Optional[str]
+    server_name: str
+
+
+@dataclass
+class MCPPromptInfo:
+    """MCP 提示模板信息"""
+    name: str
+    description: str
+    arguments: List[Dict[str, Any]]  # [{name, description, required}]
     server_name: str
 
 
@@ -175,8 +199,14 @@ class MCPClientSession:
         self._write_stream = None
         self._process: Optional[asyncio.subprocess.Process] = None
         self._tools: List[MCPToolInfo] = []
+        self._resources: List[MCPResourceInfo] = []  # v1.2.0: Resources 支持
+        self._prompts: List[MCPPromptInfo] = []  # v1.2.0: Prompts 支持
         self._connected = False
         self._lock = asyncio.Lock()
+        
+        # 功能支持标记（服务器可能不支持某些功能）
+        self._supports_resources: bool = False
+        self._supports_prompts: bool = False
         
         # 统计信息
         self.stats = ServerStats(server_name=config.name)
@@ -189,6 +219,26 @@ class MCPClientSession:
     @property
     def tools(self) -> List[MCPToolInfo]:
         return self._tools.copy()
+    
+    @property
+    def resources(self) -> List[MCPResourceInfo]:
+        """v1.2.0: 获取资源列表"""
+        return self._resources.copy()
+    
+    @property
+    def prompts(self) -> List[MCPPromptInfo]:
+        """v1.2.0: 获取提示模板列表"""
+        return self._prompts.copy()
+    
+    @property
+    def supports_resources(self) -> bool:
+        """v1.2.0: 服务器是否支持 Resources"""
+        return self._supports_resources
+    
+    @property
+    def supports_prompts(self) -> bool:
+        """v1.2.0: 服务器是否支持 Prompts"""
+        return self._supports_prompts
     
     @property
     def server_name(self) -> str:
@@ -371,6 +421,244 @@ class MCPClientSession:
         except Exception as e:
             logger.error(f"[{self.server_name}] 获取工具列表失败: {e}")
             self._tools = []
+
+    async def fetch_resources(self) -> bool:
+        """v1.2.0: 获取 MCP 服务器的资源列表
+        
+        Returns:
+            bool: 是否成功获取（服务器不支持时返回 False）
+        """
+        if not self._session:
+            return False
+        
+        try:
+            result = await asyncio.wait_for(
+                self._session.list_resources(),
+                timeout=self.call_timeout
+            )
+            self._resources = []
+            
+            for resource in result.resources:
+                resource_info = MCPResourceInfo(
+                    uri=str(resource.uri),
+                    name=resource.name or str(resource.uri),
+                    description=resource.description or "",
+                    mime_type=resource.mimeType if hasattr(resource, 'mimeType') else None,
+                    server_name=self.server_name
+                )
+                self._resources.append(resource_info)
+                logger.debug(f"[{self.server_name}] 发现资源: {resource_info.uri}")
+            
+            self._supports_resources = True
+            logger.info(f"[{self.server_name}] 获取到 {len(self._resources)} 个资源")
+            return True
+            
+        except Exception as e:
+            # 服务器可能不支持 resources，这不是错误
+            error_str = str(e).lower()
+            if "not supported" in error_str or "not implemented" in error_str or "method not found" in error_str:
+                logger.debug(f"[{self.server_name}] 服务器不支持 Resources 功能")
+            else:
+                logger.warning(f"[{self.server_name}] 获取资源列表失败: {e}")
+            self._supports_resources = False
+            self._resources = []
+            return False
+
+    async def fetch_prompts(self) -> bool:
+        """v1.2.0: 获取 MCP 服务器的提示模板列表
+        
+        Returns:
+            bool: 是否成功获取（服务器不支持时返回 False）
+        """
+        if not self._session:
+            return False
+        
+        try:
+            result = await asyncio.wait_for(
+                self._session.list_prompts(),
+                timeout=self.call_timeout
+            )
+            self._prompts = []
+            
+            for prompt in result.prompts:
+                # 解析参数
+                arguments = []
+                if hasattr(prompt, 'arguments') and prompt.arguments:
+                    for arg in prompt.arguments:
+                        arguments.append({
+                            "name": arg.name,
+                            "description": arg.description or "",
+                            "required": arg.required if hasattr(arg, 'required') else False,
+                        })
+                
+                prompt_info = MCPPromptInfo(
+                    name=prompt.name,
+                    description=prompt.description or f"MCP prompt: {prompt.name}",
+                    arguments=arguments,
+                    server_name=self.server_name
+                )
+                self._prompts.append(prompt_info)
+                logger.debug(f"[{self.server_name}] 发现提示模板: {prompt.name}")
+            
+            self._supports_prompts = True
+            logger.info(f"[{self.server_name}] 获取到 {len(self._prompts)} 个提示模板")
+            return True
+            
+        except Exception as e:
+            # 服务器可能不支持 prompts，这不是错误
+            error_str = str(e).lower()
+            if "not supported" in error_str or "not implemented" in error_str or "method not found" in error_str:
+                logger.debug(f"[{self.server_name}] 服务器不支持 Prompts 功能")
+            else:
+                logger.warning(f"[{self.server_name}] 获取提示模板列表失败: {e}")
+            self._supports_prompts = False
+            self._prompts = []
+            return False
+
+    async def read_resource(self, uri: str) -> MCPCallResult:
+        """v1.2.0: 读取指定资源的内容
+        
+        Args:
+            uri: 资源 URI
+            
+        Returns:
+            MCPCallResult: 包含资源内容的结果
+        """
+        start_time = time.time()
+        
+        if not self._connected or not self._session:
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=f"服务器 {self.server_name} 未连接"
+            )
+        
+        if not self._supports_resources:
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=f"服务器 {self.server_name} 不支持 Resources 功能"
+            )
+        
+        try:
+            result = await asyncio.wait_for(
+                self._session.read_resource(uri),
+                timeout=self.call_timeout
+            )
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # 处理返回内容
+            content_parts = []
+            for content in result.contents:
+                if hasattr(content, 'text'):
+                    content_parts.append(content.text)
+                elif hasattr(content, 'blob'):
+                    # 二进制数据，返回 base64 或提示
+                    import base64
+                    blob_data = content.blob
+                    if len(blob_data) < 10000:  # 小于 10KB 返回 base64
+                        content_parts.append(f"[base64]{base64.b64encode(blob_data).decode()}")
+                    else:
+                        content_parts.append(f"[二进制数据: {len(blob_data)} bytes]")
+                else:
+                    content_parts.append(str(content))
+            
+            return MCPCallResult(
+                success=True,
+                content="\n".join(content_parts) if content_parts else "",
+                duration_ms=duration_ms
+            )
+            
+        except asyncio.TimeoutError:
+            duration_ms = (time.time() - start_time) * 1000
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=f"读取资源超时（{self.call_timeout}秒）",
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            logger.error(f"[{self.server_name}] 读取资源 {uri} 失败: {e}")
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=str(e),
+                duration_ms=duration_ms
+            )
+
+    async def get_prompt(self, name: str, arguments: Optional[Dict[str, str]] = None) -> MCPCallResult:
+        """v1.2.0: 获取提示模板的内容
+        
+        Args:
+            name: 提示模板名称
+            arguments: 模板参数
+            
+        Returns:
+            MCPCallResult: 包含提示内容的结果
+        """
+        start_time = time.time()
+        
+        if not self._connected or not self._session:
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=f"服务器 {self.server_name} 未连接"
+            )
+        
+        if not self._supports_prompts:
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=f"服务器 {self.server_name} 不支持 Prompts 功能"
+            )
+        
+        try:
+            result = await asyncio.wait_for(
+                self._session.get_prompt(name, arguments=arguments or {}),
+                timeout=self.call_timeout
+            )
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # 处理返回的消息
+            messages = []
+            for msg in result.messages:
+                role = msg.role if hasattr(msg, 'role') else "unknown"
+                content_text = ""
+                if hasattr(msg, 'content'):
+                    if hasattr(msg.content, 'text'):
+                        content_text = msg.content.text
+                    elif isinstance(msg.content, str):
+                        content_text = msg.content
+                    else:
+                        content_text = str(msg.content)
+                messages.append(f"[{role}]: {content_text}")
+            
+            return MCPCallResult(
+                success=True,
+                content="\n\n".join(messages) if messages else "",
+                duration_ms=duration_ms
+            )
+            
+        except asyncio.TimeoutError:
+            duration_ms = (time.time() - start_time) * 1000
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=f"获取提示模板超时（{self.call_timeout}秒）",
+                duration_ms=duration_ms
+            )
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            logger.error(f"[{self.server_name}] 获取提示模板 {name} 失败: {e}")
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=str(e),
+                duration_ms=duration_ms
+            )
     
     async def check_health(self) -> bool:
         """检查连接健康状态（心跳检测）
@@ -464,6 +752,10 @@ class MCPClientSession:
         """清理资源"""
         self._connected = False
         self._tools = []
+        self._resources = []  # v1.2.0
+        self._prompts = []  # v1.2.0
+        self._supports_resources = False  # v1.2.0
+        self._supports_prompts = False  # v1.2.0
         
         try:
             if hasattr(self, '_session_context') and self._session_context:
@@ -523,6 +815,8 @@ class MCPClientManager:
         self._initialized = True
         self._clients: Dict[str, MCPClientSession] = {}
         self._all_tools: Dict[str, Tuple[MCPToolInfo, MCPClientSession]] = {}
+        self._all_resources: Dict[str, Tuple[MCPResourceInfo, MCPClientSession]] = {}  # v1.2.0
+        self._all_prompts: Dict[str, Tuple[MCPPromptInfo, MCPClientSession]] = {}  # v1.2.0
         self._settings: Dict[str, Any] = {}
         self._lock = asyncio.Lock()
         
@@ -561,6 +855,16 @@ class MCPClientManager:
     def all_tools(self) -> Dict[str, Tuple[MCPToolInfo, MCPClientSession]]:
         """获取所有已注册的工具"""
         return self._all_tools.copy()
+    
+    @property
+    def all_resources(self) -> Dict[str, Tuple[MCPResourceInfo, MCPClientSession]]:
+        """v1.2.0: 获取所有已注册的资源"""
+        return self._all_resources.copy()
+    
+    @property
+    def all_prompts(self) -> Dict[str, Tuple[MCPPromptInfo, MCPClientSession]]:
+        """v1.2.0: 获取所有已注册的提示模板"""
+        return self._all_prompts.copy()
     
     @property
     def connected_servers(self) -> List[str]:
@@ -626,6 +930,49 @@ class MCPClientManager:
             del self._all_tools[key]
             logger.debug(f"注销 MCP 工具: {key}")
         return keys_to_remove
+
+    def _register_resources(self, client: MCPClientSession) -> None:
+        """v1.2.0: 注册客户端的资源"""
+        tool_prefix = self._settings.get("tool_prefix", "mcp")
+        
+        for resource in client.resources:
+            # 资源键格式: mcp_{server}_{uri_safe_name}
+            # 将 URI 转换为安全的键名
+            safe_uri = resource.uri.replace("://", "_").replace("/", "_").replace(".", "_")
+            resource_key = f"{tool_prefix}_{client.server_name}_res_{safe_uri}"
+            self._all_resources[resource_key] = (resource, client)
+            logger.debug(f"注册 MCP 资源: {resource_key}")
+    
+    def _unregister_resources(self, server_name: str) -> List[str]:
+        """v1.2.0: 注销服务器的资源"""
+        tool_prefix = self._settings.get("tool_prefix", "mcp")
+        prefix = f"{tool_prefix}_{server_name}_res_"
+        
+        keys_to_remove = [k for k in self._all_resources.keys() if k.startswith(prefix)]
+        for key in keys_to_remove:
+            del self._all_resources[key]
+            logger.debug(f"注销 MCP 资源: {key}")
+        return keys_to_remove
+
+    def _register_prompts(self, client: MCPClientSession) -> None:
+        """v1.2.0: 注册客户端的提示模板"""
+        tool_prefix = self._settings.get("tool_prefix", "mcp")
+        
+        for prompt in client.prompts:
+            prompt_key = f"{tool_prefix}_{client.server_name}_prompt_{prompt.name}"
+            self._all_prompts[prompt_key] = (prompt, client)
+            logger.debug(f"注册 MCP 提示模板: {prompt_key}")
+    
+    def _unregister_prompts(self, server_name: str) -> List[str]:
+        """v1.2.0: 注销服务器的提示模板"""
+        tool_prefix = self._settings.get("tool_prefix", "mcp")
+        prefix = f"{tool_prefix}_{server_name}_prompt_"
+        
+        keys_to_remove = [k for k in self._all_prompts.keys() if k.startswith(prefix)]
+        for key in keys_to_remove:
+            del self._all_prompts[key]
+            logger.debug(f"注销 MCP 提示模板: {key}")
+        return keys_to_remove
     
     async def remove_server(self, server_name: str) -> bool:
         """移除 MCP 服务器"""
@@ -636,6 +983,8 @@ class MCPClientManager:
             client = self._clients[server_name]
             await client.disconnect()
             self._unregister_tools(server_name)
+            self._unregister_resources(server_name)  # v1.2.0
+            self._unregister_prompts(server_name)  # v1.2.0
             del self._clients[server_name]
             
             logger.info(f"服务器 {server_name} 已移除")
@@ -650,6 +999,8 @@ class MCPClientManager:
         
         async with self._lock:
             self._unregister_tools(server_name)
+            self._unregister_resources(server_name)  # v1.2.0
+            self._unregister_prompts(server_name)  # v1.2.0
             await client.disconnect()
         
         # 尝试重连
@@ -660,6 +1011,13 @@ class MCPClientManager:
             if await client.connect():
                 async with self._lock:
                     self._register_tools(client)
+                    # v1.2.0: 重连后也尝试获取 resources 和 prompts
+                    if self._settings.get("enable_resources", False):
+                        await client.fetch_resources()
+                        self._register_resources(client)
+                    if self._settings.get("enable_prompts", False):
+                        await client.fetch_prompts()
+                        self._register_prompts(client)
                 client.stats.record_reconnect()
                 logger.info(f"服务器 {server_name} 重连成功")
                 return True
@@ -693,6 +1051,103 @@ class MCPClientManager:
             self._global_stats["failed_calls"] += 1
         
         return result
+
+    async def fetch_resources_for_server(self, server_name: str) -> bool:
+        """v1.2.0: 获取指定服务器的资源列表"""
+        if server_name not in self._clients:
+            return False
+        
+        client = self._clients[server_name]
+        if not client.is_connected:
+            return False
+        
+        success = await client.fetch_resources()
+        if success:
+            async with self._lock:
+                self._register_resources(client)
+        return success
+
+    async def fetch_prompts_for_server(self, server_name: str) -> bool:
+        """v1.2.0: 获取指定服务器的提示模板列表"""
+        if server_name not in self._clients:
+            return False
+        
+        client = self._clients[server_name]
+        if not client.is_connected:
+            return False
+        
+        success = await client.fetch_prompts()
+        if success:
+            async with self._lock:
+                self._register_prompts(client)
+        return success
+
+    async def read_resource(self, uri: str, server_name: Optional[str] = None) -> MCPCallResult:
+        """v1.2.0: 读取资源内容
+        
+        Args:
+            uri: 资源 URI
+            server_name: 指定服务器名称（可选，不指定则自动查找）
+        """
+        # 如果指定了服务器
+        if server_name:
+            if server_name not in self._clients:
+                return MCPCallResult(
+                    success=False,
+                    content=None,
+                    error=f"服务器 {server_name} 不存在"
+                )
+            client = self._clients[server_name]
+            return await client.read_resource(uri)
+        
+        # 自动查找拥有该资源的服务器
+        for resource_key, (resource_info, client) in self._all_resources.items():
+            if resource_info.uri == uri:
+                return await client.read_resource(uri)
+        
+        # 尝试在所有支持 resources 的服务器上查找
+        for client in self._clients.values():
+            if client.is_connected and client.supports_resources:
+                result = await client.read_resource(uri)
+                if result.success:
+                    return result
+        
+        return MCPCallResult(
+            success=False,
+            content=None,
+            error=f"未找到资源: {uri}"
+        )
+
+    async def get_prompt(self, name: str, arguments: Optional[Dict[str, str]] = None, 
+                         server_name: Optional[str] = None) -> MCPCallResult:
+        """v1.2.0: 获取提示模板内容
+        
+        Args:
+            name: 提示模板名称
+            arguments: 模板参数
+            server_name: 指定服务器名称（可选）
+        """
+        # 如果指定了服务器
+        if server_name:
+            if server_name not in self._clients:
+                return MCPCallResult(
+                    success=False,
+                    content=None,
+                    error=f"服务器 {server_name} 不存在"
+                )
+            client = self._clients[server_name]
+            return await client.get_prompt(name, arguments)
+        
+        # 自动查找拥有该提示模板的服务器
+        for prompt_key, (prompt_info, client) in self._all_prompts.items():
+            if prompt_info.name == name:
+                return await client.get_prompt(name, arguments)
+        
+        return MCPCallResult(
+            success=False,
+            content=None,
+            error=f"未找到提示模板: {name}"
+        )
     
     # ==================== 心跳检测 ====================
     
@@ -828,6 +1283,8 @@ class MCPClientManager:
                 await client.disconnect()
             self._clients.clear()
             self._all_tools.clear()
+            self._all_resources.clear()  # v1.2.0
+            self._all_prompts.clear()  # v1.2.0
             logger.info("MCP 客户端管理器已关闭")
     
     def get_status(self) -> Dict[str, Any]:
@@ -837,12 +1294,18 @@ class MCPClientManager:
             "connected_servers": len(self.connected_servers),
             "disconnected_servers": len(self.disconnected_servers),
             "total_tools": len(self._all_tools),
+            "total_resources": len(self._all_resources),  # v1.2.0
+            "total_prompts": len(self._all_prompts),  # v1.2.0
             "heartbeat_running": self._heartbeat_running,
             "servers": {
                 name: {
                     "connected": client.is_connected,
                     "enabled": client.config.enabled,
                     "tools_count": len(client.tools),
+                    "resources_count": len(client.resources),  # v1.2.0
+                    "prompts_count": len(client.prompts),  # v1.2.0
+                    "supports_resources": client.supports_resources,  # v1.2.0
+                    "supports_prompts": client.supports_prompts,  # v1.2.0
                     "transport": client.config.transport.value,
                     "consecutive_failures": client.stats.consecutive_failures,
                 }

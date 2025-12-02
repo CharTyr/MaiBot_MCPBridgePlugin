@@ -14,6 +14,8 @@
 - 🔄 **v1.1.0** 自动重连 - 检测到断开时自动尝试重连
 - 📊 **v1.1.0** 调用统计 - 记录工具调用次数、成功率、耗时
 - 🛠️ **v1.1.0** 内置状态工具 - 通过 `mcp_status` 查询连接状态
+- 📦 **v1.2.0** Resources 支持 - 读取 MCP 服务器提供的资源（实验性）
+- 📝 **v1.2.0** Prompts 支持 - 使用 MCP 服务器提供的提示模板（实验性）
 
 - <img width="3012" height="1794" alt="image" src="https://github.com/user-attachments/assets/ece56404-301a-4abf-b16d-87bd430fc977" />
 
@@ -89,6 +91,8 @@ cp config.example.toml config.toml
 | `heartbeat_interval` | float | 60.0 | 心跳检测间隔（秒） | ✅ |
 | `auto_reconnect` | bool | true | 检测到断开时自动重连 | ✅ |
 | `max_reconnect_attempts` | int | 3 | 最大连续重连次数 | ✅ |
+| `enable_resources` | bool | false | 启用 Resources 支持（实验性） | ✅ |
+| `enable_prompts` | bool | false | 启用 Prompts 支持（实验性） | ✅ |
 
 ### 服务器配置
 
@@ -165,6 +169,60 @@ MCP 工具在 MaiBot 中的名称格式为：
 ```
 
 例如：`mcp_howtocook_whatToEat`
+
+## v1.2.0 新功能：Resources 和 Prompts
+
+### Resources（资源）
+
+MCP Resources 允许服务器暴露数据（如文件内容、数据库记录等）供客户端读取。
+
+**启用方法：**
+```toml
+[settings]
+enable_resources = true
+```
+
+**可用工具：**
+- `mcp_status(query_type="resources")` - 列出所有可用资源
+- `mcp_read_resource` - 读取指定资源的内容
+
+**使用示例：**
+```
+用户：列出可用的 MCP 资源
+麦麦：[调用 mcp_status，参数 query_type="resources"]
+
+用户：读取 file:///path/to/file.txt 的内容
+麦麦：[调用 mcp_read_resource，参数 uri="file:///path/to/file.txt"]
+```
+
+### Prompts（提示模板）
+
+MCP Prompts 允许服务器提供预定义的提示模板，可以包含参数。
+
+**启用方法：**
+```toml
+[settings]
+enable_prompts = true
+```
+
+**可用工具：**
+- `mcp_status(query_type="prompts")` - 列出所有可用提示模板
+- `mcp_get_prompt` - 获取指定提示模板的内容
+
+**使用示例：**
+```
+用户：列出可用的提示模板
+麦麦：[调用 mcp_status，参数 query_type="prompts"]
+
+用户：获取 code_review 模板，参数是 {"language": "python"}
+麦麦：[调用 mcp_get_prompt，参数 name="code_review", arguments='{"language": "python"}']
+```
+
+### 注意事项
+
+1. **默认关闭** - 这些功能默认禁用，需要手动开启
+2. **服务器支持** - 不是所有 MCP 服务器都支持 Resources/Prompts，插件会自动检测
+3. **实验性功能** - 这些功能标记为实验性，可能在未来版本中有变化
 
 ## 工作原理
 

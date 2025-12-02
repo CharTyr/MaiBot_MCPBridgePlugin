@@ -23,6 +23,8 @@ from .mcp_client import (
     MCPClientManager,
     MCPServerConfig,
     MCPToolInfo,
+    MCPResourceInfo,
+    MCPPromptInfo,
     TransportType,
     mcp_manager,
 )
@@ -267,13 +269,106 @@ mcp_tool_registry = MCPToolRegistry()
 _plugin_instance: Optional["MCPBridgePlugin"] = None
 
 
+class MCPReadResourceTool(BaseTool):
+    """v1.2.0: MCP 资源读取工具 - 读取 MCP 服务器提供的资源内容"""
+    
+    name = "mcp_read_resource"
+    description = "读取 MCP 服务器提供的资源内容（如文件、数据库记录等）。使用前请先用 mcp_list_resources 查看可用资源。"
+    parameters = [
+        ("uri", ToolParamType.STRING, "资源 URI（如 file:///path/to/file 或自定义 URI）", True, None),
+        ("server_name", ToolParamType.STRING, "指定服务器名称（可选，不指定则自动查找）", False, None),
+    ]
+    available_for_llm = True
+    
+    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+        """执行资源读取"""
+        uri = function_args.get("uri", "")
+        server_name = function_args.get("server_name")
+        
+        if not uri:
+            return {
+                "name": self.name,
+                "content": "❌ 请提供资源 URI"
+            }
+        
+        result = await mcp_manager.read_resource(uri, server_name)
+        
+        if result.success:
+            return {
+                "name": self.name,
+                "content": result.content
+            }
+        else:
+            return {
+                "name": self.name,
+                "content": f"❌ 读取资源失败: {result.error}"
+            }
+    
+    async def direct_execute(self, **function_args) -> Dict[str, Any]:
+        return await self.execute(function_args)
+
+
+class MCPGetPromptTool(BaseTool):
+    """v1.2.0: MCP 提示模板工具 - 获取 MCP 服务器提供的提示模板内容"""
+    
+    name = "mcp_get_prompt"
+    description = "获取 MCP 服务器提供的提示模板内容。使用前请先用 mcp_list_prompts 查看可用模板。"
+    parameters = [
+        ("name", ToolParamType.STRING, "提示模板名称", True, None),
+        ("arguments", ToolParamType.STRING, "模板参数（JSON 对象格式，如 {\"key\": \"value\"}）", False, None),
+        ("server_name", ToolParamType.STRING, "指定服务器名称（可选）", False, None),
+    ]
+    available_for_llm = True
+    
+    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+        """获取提示模板"""
+        import json
+        
+        prompt_name = function_args.get("name", "")
+        arguments_str = function_args.get("arguments", "")
+        server_name = function_args.get("server_name")
+        
+        if not prompt_name:
+            return {
+                "name": self.name,
+                "content": "❌ 请提供提示模板名称"
+            }
+        
+        # 解析参数
+        arguments = None
+        if arguments_str:
+            try:
+                arguments = json.loads(arguments_str)
+            except json.JSONDecodeError:
+                return {
+                    "name": self.name,
+                    "content": f"❌ 参数格式错误，请使用 JSON 对象格式"
+                }
+        
+        result = await mcp_manager.get_prompt(prompt_name, arguments, server_name)
+        
+        if result.success:
+            return {
+                "name": self.name,
+                "content": result.content
+            }
+        else:
+            return {
+                "name": self.name,
+                "content": f"❌ 获取提示模板失败: {result.error}"
+            }
+    
+    async def direct_execute(self, **function_args) -> Dict[str, Any]:
+        return await self.execute(function_args)
+
+
 class MCPStatusTool(BaseTool):
-    """MCP 状态查询工具 - 查看 MCP 服务器连接状态和调用统计"""
+    """MCP 状态查询工具 - 查看 MCP 服务器连接状态、工具、资源、模板和调用统计"""
     
     name = "mcp_status"
-    description = "查询 MCP 桥接插件的状态，包括服务器连接状态、可用工具列表、调用统计等信息"
+    description = "查询 MCP 桥接插件的状态，包括服务器连接状态、可用工具列表、资源列表、提示模板列表、调用统计等信息"
     parameters = [
-        ("query_type", ToolParamType.STRING, "查询类型", False, ["status", "tools", "stats", "all"]),
+        ("query_type", ToolParamType.STRING, "查询类型", False, ["status", "tools", "resources", "prompts", "stats", "all"]),
         ("server_name", ToolParamType.STRING, "指定服务器名称（可选，不指定则查询所有）", False, None),
     ]
     available_for_llm = True
@@ -290,6 +385,14 @@ class MCPStatusTool(BaseTool):
         
         if query_type in ("tools", "all"):
             result_parts.append(self._format_tools(server_name))
+        
+        # v1.2.0: 资源列表
+        if query_type in ("resources", "all"):
+            result_parts.append(self._format_resources(server_name))
+        
+        # v1.2.0: 提示模板列表
+        if query_type in ("prompts", "all"):
+            result_parts.append(self._format_prompts(server_name))
         
         if query_type in ("stats", "all"):
             result_parts.append(self._format_stats(server_name))
@@ -373,6 +476,75 @@ class MCPStatusTool(BaseTool):
                     lines.append(f"    平均耗时: {ts['avg_duration_ms']:.0f}ms")
                     if ts['last_error']:
                         lines.append(f"    最近错误: {ts['last_error'][:50]}...")
+        
+        return "\n".join(lines)
+    
+    def _format_resources(self, server_name: Optional[str] = None) -> str:
+        """v1.2.0: 格式化资源列表"""
+        resources = mcp_manager.all_resources
+        if not resources:
+            return "📦 当前没有可用的 MCP 资源\n  提示: 确保已启用 enable_resources 配置"
+        
+        lines = ["📦 可用 MCP 资源"]
+        
+        # 按服务器分组
+        by_server: Dict[str, List[MCPResourceInfo]] = {}
+        for key, (resource_info, _) in resources.items():
+            if server_name and resource_info.server_name != server_name:
+                continue
+            if resource_info.server_name not in by_server:
+                by_server[resource_info.server_name] = []
+            by_server[resource_info.server_name].append(resource_info)
+        
+        for srv_name, resource_list in by_server.items():
+            lines.append(f"\n🔌 {srv_name} ({len(resource_list)} 个资源):")
+            for res in resource_list:
+                lines.append(f"  • {res.name}")
+                lines.append(f"    URI: {res.uri}")
+                if res.description:
+                    desc = res.description[:50] + "..." if len(res.description) > 50 else res.description
+                    lines.append(f"    描述: {desc}")
+                if res.mime_type:
+                    lines.append(f"    类型: {res.mime_type}")
+        
+        if not by_server:
+            lines.append("  (无匹配的资源)")
+        
+        return "\n".join(lines)
+    
+    def _format_prompts(self, server_name: Optional[str] = None) -> str:
+        """v1.2.0: 格式化提示模板列表"""
+        prompts = mcp_manager.all_prompts
+        if not prompts:
+            return "📝 当前没有可用的 MCP 提示模板\n  提示: 确保已启用 enable_prompts 配置"
+        
+        lines = ["📝 可用 MCP 提示模板"]
+        
+        # 按服务器分组
+        by_server: Dict[str, List[MCPPromptInfo]] = {}
+        for key, (prompt_info, _) in prompts.items():
+            if server_name and prompt_info.server_name != server_name:
+                continue
+            if prompt_info.server_name not in by_server:
+                by_server[prompt_info.server_name] = []
+            by_server[prompt_info.server_name].append(prompt_info)
+        
+        for srv_name, prompt_list in by_server.items():
+            lines.append(f"\n🔌 {srv_name} ({len(prompt_list)} 个模板):")
+            for prompt in prompt_list:
+                lines.append(f"  • {prompt.name}")
+                if prompt.description:
+                    desc = prompt.description[:60] + "..." if len(prompt.description) > 60 else prompt.description
+                    lines.append(f"    描述: {desc}")
+                if prompt.arguments:
+                    args_str = ", ".join([
+                        f"{a['name']}{'*' if a.get('required') else ''}"
+                        for a in prompt.arguments
+                    ])
+                    lines.append(f"    参数: {args_str}")
+        
+        if not by_server:
+            lines.append("  (无匹配的模板)")
         
         return "\n".join(lines)
     
@@ -658,6 +830,22 @@ class MCPBridgePlugin(BasePlugin):
                 max=10,
                 order=10,
             ),
+            "enable_resources": ConfigField(
+                type=bool,
+                default=False,
+                description="📦 启用 Resources - 允许读取 MCP 服务器提供的资源（文件、数据等）",
+                label="📦 启用 Resources（实验性）",
+                hint="启用后会自动发现并注册服务器提供的资源，可通过 mcp_read_resource 工具读取",
+                order=11,
+            ),
+            "enable_prompts": ConfigField(
+                type=bool,
+                default=False,
+                description="📝 启用 Prompts - 允许使用 MCP 服务器提供的提示模板",
+                label="📝 启用 Prompts（实验性）",
+                hint="启用后会自动发现并注册服务器提供的提示模板，可通过 mcp_get_prompt 工具获取",
+                order=12,
+            ),
         },
         "servers": {
             "list": ConfigField(
@@ -784,6 +972,20 @@ class MCPBridgePlugin(BasePlugin):
             
             logger.info(f"服务器 {config.name} 连接成功")
             
+            # v1.2.0: 如果启用了 Resources，获取资源列表
+            if settings.get("enable_resources", False):
+                try:
+                    await mcp_manager.fetch_resources_for_server(config.name)
+                except Exception as e:
+                    logger.warning(f"服务器 {config.name} 获取资源列表失败: {e}")
+            
+            # v1.2.0: 如果启用了 Prompts，获取提示模板列表
+            if settings.get("enable_prompts", False):
+                try:
+                    await mcp_manager.fetch_prompts_for_server(config.name)
+                except Exception as e:
+                    logger.warning(f"服务器 {config.name} 获取提示模板列表失败: {e}")
+            
             # 动态注册工具到组件系统
             from src.plugin_system.core.component_registry import component_registry
             
@@ -837,16 +1039,25 @@ class MCPBridgePlugin(BasePlugin):
         from pathlib import Path
         
         status = mcp_manager.get_status()
+        settings = self.config.get("settings", {})
         lines = []
         
         # 概览
         lines.append(f"服务器: {status['connected_servers']}/{status['total_servers']} 已连接")
         lines.append(f"工具数: {status['total_tools']}")
+        # v1.2.0: 显示资源和提示模板数量
+        if settings.get("enable_resources", False):
+            lines.append(f"资源数: {status.get('total_resources', 0)}")
+        if settings.get("enable_prompts", False):
+            lines.append(f"模板数: {status.get('total_prompts', 0)}")
         lines.append(f"心跳: {'运行中' if status['heartbeat_running'] else '已停止'}")
         lines.append("")
         
         # 服务器详情和工具列表
         tools = mcp_manager.all_tools
+        resources = mcp_manager.all_resources
+        prompts = mcp_manager.all_prompts
+        
         for name, info in status.get("servers", {}).items():
             icon = "✅" if info["connected"] else "❌"
             lines.append(f"{icon} {name} ({info['transport']})")
@@ -858,6 +1069,16 @@ class MCPBridgePlugin(BasePlugin):
                     lines.append(f"   • {tool_name}")
             else:
                 lines.append("   (无工具)")
+            
+            # v1.2.0: 显示资源数量
+            if settings.get("enable_resources", False) and info.get("supports_resources"):
+                res_count = info.get("resources_count", 0)
+                lines.append(f"   📦 {res_count} 个资源")
+            
+            # v1.2.0: 显示提示模板数量
+            if settings.get("enable_prompts", False) and info.get("supports_prompts"):
+                prompt_count = info.get("prompts_count", 0)
+                lines.append(f"   📝 {prompt_count} 个模板")
         
         if not status.get("servers"):
             lines.append("(无服务器)")
@@ -915,6 +1136,31 @@ class MCPBridgePlugin(BasePlugin):
             component_type=ComponentType.TOOL,
         )
         components.append((status_tool_info, MCPStatusTool))
+        
+        # v1.2.0: 添加 Resources/Prompts 操作工具（列表功能已合并到 mcp_status）
+        settings = self.config.get("settings", {})
+        
+        if settings.get("enable_resources", False):
+            # 资源读取工具
+            read_resource_info = ToolInfo(
+                name=MCPReadResourceTool.name,
+                tool_description=MCPReadResourceTool.description,
+                enabled=True,
+                tool_parameters=MCPReadResourceTool.parameters,
+                component_type=ComponentType.TOOL,
+            )
+            components.append((read_resource_info, MCPReadResourceTool))
+        
+        if settings.get("enable_prompts", False):
+            # 提示模板获取工具
+            get_prompt_info = ToolInfo(
+                name=MCPGetPromptTool.name,
+                tool_description=MCPGetPromptTool.description,
+                enabled=True,
+                tool_parameters=MCPGetPromptTool.parameters,
+                component_type=ComponentType.TOOL,
+            )
+            components.append((get_prompt_info, MCPGetPromptTool))
         
         return components
     

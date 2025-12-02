@@ -4,7 +4,15 @@
 
 ## 版本历史
 
-### v1.1.1 (当前版本)
+### v1.2.0 (当前版本)
+- ✅ Resources 支持 - 读取 MCP 服务器提供的资源（实验性）
+- ✅ Prompts 支持 - 使用 MCP 服务器提供的提示模板（实验性）
+- ✅ `mcp_status` 扩展 - 新增 `resources` 和 `prompts` 查询类型
+- ✅ `mcp_read_resource` 工具 - 读取资源内容
+- ✅ `mcp_get_prompt` 工具 - 获取提示模板内容
+- ✅ 新配置项 `enable_resources` 和 `enable_prompts`（默认关闭）
+
+### v1.1.1
 - ✅ `/mcp` 命令 - 通过聊天命令查询状态、重连服务器
 - ✅ WebUI 状态显示 - 配置页面显示连接状态和工具列表
 - ✅ 文档完善 - 添加 MCP 服务器获取指南、三引号格式说明
@@ -458,6 +466,121 @@ LLM: [调用 mcp_status(query_type="all")]
 
 # 参数错误
 "❌ 参数错误: Invalid arguments for tool..."
+```
+
+## v1.2.0 新功能详解
+
+### Resources 支持
+
+MCP Resources 允许服务器暴露数据（文件、数据库记录等）供客户端读取。
+
+```python
+# 配置项
+settings = {
+    "enable_resources": True,  # 启用 Resources 支持（默认关闭）
+}
+
+# 新增数据类
+@dataclass
+class MCPResourceInfo:
+    uri: str                    # 资源 URI
+    name: str                   # 资源名称
+    description: str            # 资源描述
+    mime_type: Optional[str]    # MIME 类型
+    server_name: str            # 所属服务器
+
+# MCPClientSession 新增方法
+async def fetch_resources(self) -> bool:
+    """获取资源列表，返回是否成功（服务器不支持时返回 False）"""
+
+async def read_resource(self, uri: str) -> MCPCallResult:
+    """读取资源内容"""
+
+# MCPClientManager 新增方法
+async def read_resource(self, uri: str, server_name: Optional[str] = None) -> MCPCallResult:
+    """读取资源，可指定服务器或自动查找"""
+
+@property
+def all_resources(self) -> Dict[str, Tuple[MCPResourceInfo, MCPClientSession]]:
+    """获取所有已注册的资源"""
+```
+
+### Prompts 支持
+
+MCP Prompts 允许服务器提供预定义的提示模板。
+
+```python
+# 配置项
+settings = {
+    "enable_prompts": True,  # 启用 Prompts 支持（默认关闭）
+}
+
+# 新增数据类
+@dataclass
+class MCPPromptInfo:
+    name: str                           # 模板名称
+    description: str                    # 模板描述
+    arguments: List[Dict[str, Any]]     # 参数列表 [{name, description, required}]
+    server_name: str                    # 所属服务器
+
+# MCPClientSession 新增方法
+async def fetch_prompts(self) -> bool:
+    """获取提示模板列表"""
+
+async def get_prompt(self, name: str, arguments: Optional[Dict[str, str]] = None) -> MCPCallResult:
+    """获取提示模板内容"""
+
+# MCPClientManager 新增方法
+async def get_prompt(self, name: str, arguments: Optional[Dict[str, str]] = None, 
+                     server_name: Optional[str] = None) -> MCPCallResult:
+    """获取提示模板"""
+
+@property
+def all_prompts(self) -> Dict[str, Tuple[MCPPromptInfo, MCPClientSession]]:
+    """获取所有已注册的提示模板"""
+```
+
+### 新增工具
+
+```python
+# mcp_status 扩展了查询类型
+query_type = ["status", "tools", "resources", "prompts", "stats", "all"]
+
+# 新增操作工具
+class MCPReadResourceTool(BaseTool):
+    """读取资源内容"""
+    name = "mcp_read_resource"
+    parameters = [
+        ("uri", STRING, "资源 URI", True, None),
+        ("server_name", STRING, "服务器名称（可选）", False, None),
+    ]
+
+class MCPGetPromptTool(BaseTool):
+    """获取提示模板内容"""
+    name = "mcp_get_prompt"
+    parameters = [
+        ("name", STRING, "模板名称", True, None),
+        ("arguments", STRING, "模板参数（JSON 格式）", False, None),
+        ("server_name", STRING, "服务器名称（可选）", False, None),
+    ]
+```
+
+### 使用示例
+
+```
+用户: 列出可用的 MCP 资源
+LLM: [调用 mcp_status(query_type="resources")]
+
+📦 可用 MCP 资源
+🔌 filesystem (3 个资源):
+  • config.json
+    URI: file:///app/config.json
+    类型: application/json
+  ...
+
+用户: 读取 config.json
+LLM: [调用 mcp_read_resource(uri="file:///app/config.json")]
+{"debug": true, ...}
 ```
 
 ## 已知限制
