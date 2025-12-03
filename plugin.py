@@ -1,6 +1,10 @@
 """
-MCP 桥接插件 v1.5.2
+MCP 桥接插件 v1.5.3
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.5.3 配置优化:
+- 新增智能心跳 WebUI 配置项：启用开关、最大间隔倍数
+- 支持在 WebUI 中开启/关闭智能心跳功能
 
 v1.5.2 性能优化:
 - 智能心跳间隔：根据服务器稳定性动态调整心跳频率
@@ -1472,12 +1476,32 @@ class MCPBridgePlugin(BasePlugin):
             "heartbeat_interval": ConfigField(
                 type=float,
                 default=60.0,
-                description="💓 心跳间隔（秒）",
+                description="💓 基准心跳间隔（秒）",
                 label="💓 心跳间隔（秒）",
                 min=10.0,
                 max=300.0,
                 step=10.0,
+                hint="智能心跳会根据服务器稳定性自动调整",
                 order=8,
+            ),
+            "heartbeat_adaptive": ConfigField(
+                type=bool,
+                default=True,
+                description="🧠 根据服务器稳定性自动调整心跳间隔",
+                label="🧠 智能心跳",
+                hint="稳定服务器逐渐增加间隔，断开的服务器缩短间隔",
+                order=9,
+            ),
+            "heartbeat_max_multiplier": ConfigField(
+                type=float,
+                default=3.0,
+                description="稳定服务器的最大间隔倍数",
+                label="📈 最大间隔倍数",
+                min=1.5,
+                max=5.0,
+                step=0.5,
+                hint="稳定服务器心跳间隔最高可达 基准间隔 × 此值",
+                order=10,
             ),
             "auto_reconnect": ConfigField(
                 type=bool,

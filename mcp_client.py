@@ -1200,12 +1200,17 @@ class MCPClientManager:
         auto_reconnect = self._settings.get("auto_reconnect", True)
         max_reconnect_attempts = self._settings.get("max_reconnect_attempts", 3)
         
-        # v1.5.2: 每个服务器独立的心跳间隔（根据稳定性动态调整）
+        # v1.5.2: 智能心跳配置
+        adaptive_enabled = self._settings.get("heartbeat_adaptive", True)
+        max_multiplier = self._settings.get("heartbeat_max_multiplier", 3.0)
+        
+        # 每个服务器独立的心跳间隔（根据稳定性动态调整）
         server_intervals: Dict[str, float] = {}
         min_interval = max(base_interval * 0.5, 30.0)  # 最小间隔
-        max_interval = base_interval * 3  # 最大间隔（稳定服务器可以降低频率）
+        max_interval = base_interval * max_multiplier  # 最大间隔
         
-        logger.info(f"心跳检测循环启动，基准间隔: {base_interval}秒，自动重连: {auto_reconnect}")
+        mode_str = "智能" if adaptive_enabled else "固定"
+        logger.info(f"心跳检测循环启动，{mode_str}模式，基准间隔: {base_interval}秒")
         
         while self._heartbeat_running:
             try:
@@ -1238,29 +1243,32 @@ class MCPClientManager:
                         # 检查健康状态
                         healthy = await client.check_health()
                         if healthy:
-                            # v1.5.2: 稳定服务器逐渐增加心跳间隔
-                            if client.stats.consecutive_failures == 0:
+                            # v1.5.2: 智能心跳 - 稳定服务器逐渐增加间隔
+                            if adaptive_enabled and client.stats.consecutive_failures == 0:
                                 new_interval = min(server_intervals[server_name] * 1.2, max_interval)
                                 if new_interval != server_intervals[server_name]:
                                     server_intervals[server_name] = new_interval
                                     logger.debug(f"[{server_name}] 稳定，心跳间隔调整为 {new_interval:.0f}s")
                         else:
                             logger.warning(f"[{server_name}] 心跳检测失败，连接可能已断开")
-                            # v1.5.2: 失败后重置为基准间隔
-                            server_intervals[server_name] = base_interval
+                            # 失败后重置为基准间隔
+                            if adaptive_enabled:
+                                server_intervals[server_name] = base_interval
                             self._notify_status_change()
                             if auto_reconnect:
                                 await self._try_reconnect(server_name, max_reconnect_attempts)
                     else:
                         # 服务器未连接，尝试重连
-                        # v1.5.2: 断开的服务器使用较短间隔尝试重连
-                        server_intervals[server_name] = min_interval
+                        if adaptive_enabled:
+                            # 智能心跳：断开的服务器使用较短间隔
+                            server_intervals[server_name] = min_interval
                         if auto_reconnect and client.stats.consecutive_failures < max_reconnect_attempts:
                             logger.info(f"[{server_name}] 检测到断开，尝试重连...")
                             await self._try_reconnect(server_name, max_reconnect_attempts)
                         elif client.stats.consecutive_failures >= max_reconnect_attempts:
-                            # 达到最大重连次数，使用较长间隔
-                            server_intervals[server_name] = max_interval
+                            if adaptive_enabled:
+                                # 达到最大重连次数，降低检测频率
+                                server_intervals[server_name] = max_interval
                             logger.debug(f"[{server_name}] 已达最大重连次数，降低检测频率")
                             
             except asyncio.CancelledError:
