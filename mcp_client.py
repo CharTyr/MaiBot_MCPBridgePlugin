@@ -2,6 +2,11 @@
 MCP 客户端封装模块
 负责与 MCP 服务器建立连接、获取工具列表、执行工具调用
 
+v1.5.2 性能优化:
+- 智能心跳间隔：根据服务器稳定性动态调整心跳频率
+- 稳定服务器逐渐增加间隔（最高 3x），减少不必要的检测
+- 断开的服务器使用较短间隔快速重连
+
 v1.1.0 新增功能:
 - 调用统计（次数、成功率、耗时）
 - 心跳检测
@@ -1190,46 +1195,79 @@ class MCPClientManager:
         logger.info("心跳检测任务已停止")
     
     async def _heartbeat_loop(self) -> None:
-        """心跳检测循环"""
-        heartbeat_interval = self._settings.get("heartbeat_interval", 60.0)
+        """心跳检测循环（v1.5.2: 智能心跳间隔）"""
+        base_interval = self._settings.get("heartbeat_interval", 60.0)
         auto_reconnect = self._settings.get("auto_reconnect", True)
         max_reconnect_attempts = self._settings.get("max_reconnect_attempts", 3)
         
-        logger.info(f"心跳检测循环启动，间隔: {heartbeat_interval}秒，自动重连: {auto_reconnect}")
+        # v1.5.2: 每个服务器独立的心跳间隔（根据稳定性动态调整）
+        server_intervals: Dict[str, float] = {}
+        min_interval = max(base_interval * 0.5, 30.0)  # 最小间隔
+        max_interval = base_interval * 3  # 最大间隔（稳定服务器可以降低频率）
+        
+        logger.info(f"心跳检测循环启动，基准间隔: {base_interval}秒，自动重连: {auto_reconnect}")
         
         while self._heartbeat_running:
             try:
-                await asyncio.sleep(heartbeat_interval)
+                # 使用最小的服务器间隔作为循环间隔
+                current_interval = min(server_intervals.values()) if server_intervals else base_interval
+                current_interval = max(current_interval, min_interval)
+                
+                await asyncio.sleep(current_interval)
                 
                 if not self._heartbeat_running:
                     break
+                
+                current_time = time.time()
                 
                 # 检查所有已启用的服务器
                 for server_name, client in list(self._clients.items()):
                     if not client.config.enabled:
                         continue
                     
+                    # 初始化服务器间隔
+                    if server_name not in server_intervals:
+                        server_intervals[server_name] = base_interval
+                    
+                    # 检查是否到达该服务器的心跳时间
+                    last_heartbeat = client.stats.last_heartbeat_time or 0
+                    if current_time - last_heartbeat < server_intervals[server_name] * 0.9:
+                        continue  # 还没到心跳时间
+                    
                     if client.is_connected:
                         # 检查健康状态
                         healthy = await client.check_health()
-                        if not healthy:
+                        if healthy:
+                            # v1.5.2: 稳定服务器逐渐增加心跳间隔
+                            if client.stats.consecutive_failures == 0:
+                                new_interval = min(server_intervals[server_name] * 1.2, max_interval)
+                                if new_interval != server_intervals[server_name]:
+                                    server_intervals[server_name] = new_interval
+                                    logger.debug(f"[{server_name}] 稳定，心跳间隔调整为 {new_interval:.0f}s")
+                        else:
                             logger.warning(f"[{server_name}] 心跳检测失败，连接可能已断开")
-                            self._notify_status_change()  # 状态变化
+                            # v1.5.2: 失败后重置为基准间隔
+                            server_intervals[server_name] = base_interval
+                            self._notify_status_change()
                             if auto_reconnect:
                                 await self._try_reconnect(server_name, max_reconnect_attempts)
                     else:
                         # 服务器未连接，尝试重连
+                        # v1.5.2: 断开的服务器使用较短间隔尝试重连
+                        server_intervals[server_name] = min_interval
                         if auto_reconnect and client.stats.consecutive_failures < max_reconnect_attempts:
                             logger.info(f"[{server_name}] 检测到断开，尝试重连...")
                             await self._try_reconnect(server_name, max_reconnect_attempts)
                         elif client.stats.consecutive_failures >= max_reconnect_attempts:
-                            logger.debug(f"[{server_name}] 已达最大重连次数，跳过")
+                            # 达到最大重连次数，使用较长间隔
+                            server_intervals[server_name] = max_interval
+                            logger.debug(f"[{server_name}] 已达最大重连次数，降低检测频率")
                             
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"心跳检测循环出错: {e}")
-                await asyncio.sleep(5)  # 出错后等待一段时间再继续
+                await asyncio.sleep(5)
     
     async def _try_reconnect(self, server_name: str, max_attempts: int) -> bool:
         """尝试重连服务器"""
