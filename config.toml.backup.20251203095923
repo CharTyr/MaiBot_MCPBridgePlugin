@@ -1,0 +1,99 @@
+# mcp_bridge_plugin - 自动生成的配置文件
+# 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具
+
+# 插件基本信息
+[plugin]
+enabled = true
+
+[settings]
+tool_prefix = "mcp"
+connect_timeout = 30
+call_timeout = 60
+auto_connect = true
+retry_attempts = 3
+retry_interval = 5
+heartbeat_enabled = true
+heartbeat_interval = 60
+auto_reconnect = true
+max_reconnect_attempts = 3
+enable_resources = false
+enable_prompts = false
+
+[servers]
+list = """[
+  {
+    "name": "howtocook",
+    "enabled": true,
+    "transport": "http",
+    "url": "https://mcp.api-inference.modelscope.net/6c238019b97243/mcp"
+  },
+  {
+    "name": "bing-web-search",
+    "enabled": true,
+    "transport": "http",
+    "url": "https://mcp.api-inference.modelscope.net/0fd6ea7bcc0740/mcp"
+  },
+  {
+    "name": "Bazi-MCP",
+    "enabled": true,
+    "transport": "streamable_http",
+    "url": "https://mcp.api-inference.modelscope.net/9631f4227f4c47/mcp",
+    "headers": {
+      "Authorization": "Bearer ms-cf5422cd-3a73-4636-97f4-4ef7a4a88388"
+    }
+  },
+  {
+    "name": "7daysfoodHelperV3.0",
+    "enabled": true,
+    "transport": "streamable_http",
+    "url": "https://mcp.api-inference.modelscope.net/0b7ff47e262845/mcp"
+  }
+]"""
+
+[status]
+connection_status = """服务器: 3/4 已连接
+工具数: 11
+心跳: 已停止
+
+❌ howtocook (http)
+   (无工具)
+✅ bing-web-search (http)
+   • bing_search
+   • fetch_webpage
+✅ Bazi-MCP (streamable_http)
+   • getBaziDetail
+   • getSolarTimes
+   • getChineseCalendar
+✅ 7daysfoodHelperV3.0 (streamable_http)
+   • meal_planner
+   • search_recipe
+   • search_recipe_1
+   • exact_search_recipe
+   • generate_spring_festival_menu
+   • lantern_festival_handler"""
+
+[tools]
+tool_list = """📦 bing-web-search (2个工具):
+  • mcp_bing_web_search_bing_search
+  • mcp_bing_web_search_fetch_webpage
+
+📦 Bazi-MCP (3个工具):
+  • mcp_Bazi_MCP_getBaziDetail
+  • mcp_Bazi_MCP_getSolarTimes
+  • mcp_Bazi_MCP_getChineseCalendar
+
+📦 7daysfoodHelperV3.0 (6个工具):
+  • mcp_7daysfoodHelperV3_0_meal_planner
+  • mcp_7daysfoodHelperV3_0_search_recipe
+  • mcp_7daysfoodHelperV3_0_search_recipe_1
+  • mcp_7daysfoodHelperV3_0_exact_search_recipe
+  • mcp_7daysfoodHelperV3_0_generate_spring_festival_menu
+  • mcp_7daysfoodHelperV3_0_lantern_festival_handler
+"""
+
+[import_export]
+import_config = ""
+import_result = """✅ 成功导入 1 个服务器:
+  • 7daysfoodHelperV3.0 (streamable_http)
+
+💡 发送 /mcp reconnect 使新服务器生效"""

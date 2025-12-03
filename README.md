@@ -79,6 +79,10 @@ cp config.example.toml config.toml
 - 🔄 自动重试、心跳检测、断线重连
 - 🖥️ WebUI 完整配置支持
 
+### v1.7.0 新增
+- ⚡ **断路器模式** - 故障服务器快速失败，避免拖慢整体响应
+- 🔄 **状态实时刷新** - WebUI 每 10 秒自动更新连接状态
+
 ### v1.6.0 新增
 - 📥 **配置导入** - 从 Claude Desktop 格式一键导入
 - 📤 **配置导出** - 导出为 Claude Desktop / Kiro / MaiBot 格式

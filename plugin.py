@@ -1,6 +1,11 @@
 """
-MCP 桥接插件 v1.6.0
+MCP 桥接插件 v1.7.0
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.7.0 稳定性与易用性优化:
+- 断路器模式：故障服务器快速失败，避免拖慢整体响应
+- 状态实时刷新：WebUI 每 10 秒自动更新连接状态
+- 断路器状态显示：在状态面板显示熔断/试探状态
 
 v1.6.0 配置导入导出:
 - 新增 /mcp import 命令，支持从 Claude Desktop 格式导入配置
@@ -1751,7 +1756,7 @@ class MCPBridgePlugin(BasePlugin):
                 default=True,
                 description="🔄 检测到断开时自动尝试重连",
                 label="🔄 自动重连",
-                order=9,
+                order=11,
             ),
             "max_reconnect_attempts": ConfigField(
                 type=int,
@@ -1760,7 +1765,27 @@ class MCPBridgePlugin(BasePlugin):
                 label="🔄 最大重连次数",
                 min=1,
                 max=10,
-                order=10,
+                order=12,
+            ),
+            # v1.7.0: 状态刷新配置
+            "status_refresh_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="📊 定期更新 WebUI 状态显示",
+                label="📊 启用状态实时刷新",
+                hint="关闭后 WebUI 状态仅在启动时更新",
+                order=13,
+            ),
+            "status_refresh_interval": ConfigField(
+                type=float,
+                default=10.0,
+                description="📊 状态刷新间隔（秒）",
+                label="📊 状态刷新间隔（秒）",
+                min=5.0,
+                max=60.0,
+                step=5.0,
+                hint="值越小刷新越频繁，但会增加少量磁盘写入",
+                order=14,
             ),
             "enable_resources": ConfigField(
                 type=bool,
@@ -2352,15 +2377,26 @@ class MCPBridgePlugin(BasePlugin):
         logger.info("配置文件监控已停止")
 
     async def _config_watcher_loop(self) -> None:
-        """v1.6.0: 配置文件监控循环"""
+        """v1.6.0: 配置文件监控循环 + v1.7.0: 状态实时刷新"""
         import tomlkit
 
         config_path = Path(__file__).parent / "config.toml"
         last_mtime = config_path.stat().st_mtime if config_path.exists() else 0
+        last_status_update = time.time()
 
         while self._config_watcher_running:
             try:
                 await asyncio.sleep(2)  # 每 2 秒检查一次
+
+                # v1.7.0: 定期更新状态显示（从配置读取）
+                settings = self.config.get("settings", {})
+                status_refresh_enabled = settings.get("status_refresh_enabled", True)
+                status_refresh_interval = settings.get("status_refresh_interval", 10.0)
+
+                current_time = time.time()
+                if status_refresh_enabled and current_time - last_status_update >= status_refresh_interval:
+                    self._update_status_display()
+                    last_status_update = current_time
 
                 if not config_path.exists():
                     continue
@@ -2862,6 +2898,14 @@ class MCPBridgePlugin(BasePlugin):
         for name, info in status.get("servers", {}).items():
             icon = "✅" if info["connected"] else "❌"
             lines.append(f"{icon} {name} ({info['transport']})")
+            
+            # v1.7.0: 显示断路器状态
+            cb_status = info.get("circuit_breaker", {})
+            cb_state = cb_status.get("state", "closed")
+            if cb_state == "open":
+                lines.append("   ⚡ 断路器: 熔断中")
+            elif cb_state == "half_open":
+                lines.append("   ⚡ 断路器: 试探中")
             
             server_tools = [t.name for key, (t, _) in tools.items() if t.server_name == name]
             if server_tools:

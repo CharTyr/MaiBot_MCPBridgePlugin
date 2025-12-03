@@ -2,6 +2,11 @@
 MCP 客户端封装模块
 负责与 MCP 服务器建立连接、获取工具列表、执行工具调用
 
+v1.7.0 稳定性优化:
+- 断路器模式：连续失败 5 次后熔断，60 秒后试探恢复
+- 熔断期间快速失败，避免等待超时
+- 连接成功时自动重置断路器
+
 v1.5.2 性能优化:
 - 智能心跳间隔：根据服务器稳定性动态调整心跳频率
 - 稳定服务器逐渐增加间隔（最高 3x），减少不必要的检测
@@ -98,6 +103,130 @@ class MCPCallResult:
     content: Any
     error: Optional[str] = None
     duration_ms: float = 0.0  # 调用耗时（毫秒）
+    circuit_broken: bool = False  # v1.7.0: 是否被断路器拦截
+
+
+class CircuitState(Enum):
+    """断路器状态"""
+    CLOSED = "closed"      # 正常状态，允许请求
+    OPEN = "open"          # 熔断状态，拒绝请求
+    HALF_OPEN = "half_open"  # 半开状态，允许少量试探请求
+
+
+@dataclass
+class CircuitBreaker:
+    """v1.7.0: 断路器 - 防止对故障服务器持续请求
+    
+    状态转换:
+    - CLOSED -> OPEN: 连续失败次数达到阈值
+    - OPEN -> HALF_OPEN: 熔断时间到期
+    - HALF_OPEN -> CLOSED: 试探请求成功
+    - HALF_OPEN -> OPEN: 试探请求失败
+    """
+    
+    # 配置
+    failure_threshold: int = 5       # 连续失败多少次后熔断
+    recovery_timeout: float = 60.0   # 熔断后多久尝试恢复（秒）
+    half_open_max_calls: int = 1     # 半开状态最多允许几次试探调用
+    
+    # 状态
+    state: CircuitState = field(default=CircuitState.CLOSED)
+    failure_count: int = 0
+    success_count: int = 0
+    last_failure_time: float = 0.0
+    last_state_change: float = field(default_factory=time.time)
+    half_open_calls: int = 0
+    
+    def can_execute(self) -> Tuple[bool, Optional[str]]:
+        """检查是否允许执行请求
+        
+        Returns:
+            (是否允许, 拒绝原因)
+        """
+        current_time = time.time()
+        
+        if self.state == CircuitState.CLOSED:
+            return True, None
+        
+        if self.state == CircuitState.OPEN:
+            # 检查是否到了恢复时间
+            time_since_failure = current_time - self.last_failure_time
+            if time_since_failure >= self.recovery_timeout:
+                # 转换到半开状态
+                self._transition_to(CircuitState.HALF_OPEN)
+                return True, None
+            else:
+                remaining = self.recovery_timeout - time_since_failure
+                return False, f"断路器熔断中，{remaining:.0f}秒后重试"
+        
+        if self.state == CircuitState.HALF_OPEN:
+            # 半开状态，检查是否还有试探配额
+            if self.half_open_calls < self.half_open_max_calls:
+                return True, None
+            else:
+                return False, "断路器半开状态，等待试探结果"
+        
+        return True, None
+    
+    def record_success(self) -> None:
+        """记录成功调用"""
+        self.success_count += 1
+        
+        if self.state == CircuitState.HALF_OPEN:
+            # 半开状态下成功，恢复到关闭状态
+            self._transition_to(CircuitState.CLOSED)
+            logger.info("断路器恢复正常（试探成功）")
+        elif self.state == CircuitState.CLOSED:
+            # 正常状态下成功，重置失败计数
+            self.failure_count = 0
+    
+    def record_failure(self) -> None:
+        """记录失败调用"""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        
+        if self.state == CircuitState.HALF_OPEN:
+            # 半开状态下失败，重新熔断
+            self._transition_to(CircuitState.OPEN)
+            logger.warning("断路器重新熔断（试探失败）")
+        elif self.state == CircuitState.CLOSED:
+            # 检查是否达到熔断阈值
+            if self.failure_count >= self.failure_threshold:
+                self._transition_to(CircuitState.OPEN)
+                logger.warning(f"断路器熔断（连续失败 {self.failure_count} 次）")
+    
+    def _transition_to(self, new_state: CircuitState) -> None:
+        """状态转换"""
+        old_state = self.state
+        self.state = new_state
+        self.last_state_change = time.time()
+        
+        if new_state == CircuitState.CLOSED:
+            self.failure_count = 0
+            self.half_open_calls = 0
+        elif new_state == CircuitState.HALF_OPEN:
+            self.half_open_calls = 0
+        
+        logger.debug(f"断路器状态: {old_state.value} -> {new_state.value}")
+    
+    def reset(self) -> None:
+        """重置断路器"""
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.success_count = 0
+        self.half_open_calls = 0
+        self.last_state_change = time.time()
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取断路器状态"""
+        return {
+            "state": self.state.value,
+            "failure_count": self.failure_count,
+            "success_count": self.success_count,
+            "failure_threshold": self.failure_threshold,
+            "recovery_timeout": self.recovery_timeout,
+            "time_since_last_failure": time.time() - self.last_failure_time if self.last_failure_time > 0 else None,
+        }
 
 
 @dataclass
@@ -217,6 +346,9 @@ class MCPClientSession:
         # 统计信息
         self.stats = ServerStats(server_name=config.name)
         self._tool_stats: Dict[str, ToolCallStats] = {}
+        
+        # v1.7.0: 断路器
+        self._circuit_breaker = CircuitBreaker()
     
     @property
     def is_connected(self) -> bool:
@@ -254,6 +386,15 @@ class MCPClientSession:
         """获取工具统计"""
         return self._tool_stats.get(tool_name)
     
+    def get_circuit_breaker_status(self) -> Dict[str, Any]:
+        """v1.7.0: 获取断路器状态"""
+        return self._circuit_breaker.get_status()
+    
+    def reset_circuit_breaker(self) -> None:
+        """v1.7.0: 重置断路器"""
+        self._circuit_breaker.reset()
+        logger.info(f"[{self.server_name}] 断路器已重置")
+    
     def get_all_tool_stats(self) -> Dict[str, ToolCallStats]:
         """获取所有工具统计"""
         return self._tool_stats.copy()
@@ -278,6 +419,8 @@ class MCPClientSession:
                 
                 if success:
                     self.stats.record_connect()
+                    # v1.7.0: 连接成功时重置断路器
+                    self._circuit_breaker.reset()
                 else:
                     self.stats.record_failure()
                 return success
@@ -703,11 +846,26 @@ class MCPClientSession:
         """调用 MCP 工具"""
         start_time = time.time()
         
+        # v1.7.0: 断路器检查
+        can_execute, reject_reason = self._circuit_breaker.can_execute()
+        if not can_execute:
+            return MCPCallResult(
+                success=False,
+                content=None,
+                error=f"⚡ {reject_reason}",
+                circuit_broken=True
+            )
+        
+        # 半开状态下增加试探计数
+        if self._circuit_breaker.state == CircuitState.HALF_OPEN:
+            self._circuit_breaker.half_open_calls += 1
+        
         if not self._connected or not self._session:
             error_msg = f"服务器 {self.server_name} 未连接"
             # 记录失败
             if tool_name in self._tool_stats:
                 self._tool_stats[tool_name].record_call(False, 0, error_msg)
+            self._circuit_breaker.record_failure()
             return MCPCallResult(success=False, content=None, error=error_msg)
         
         try:
@@ -732,6 +890,9 @@ class MCPClientSession:
             if tool_name in self._tool_stats:
                 self._tool_stats[tool_name].record_call(True, duration_ms)
             
+            # v1.7.0: 断路器记录成功
+            self._circuit_breaker.record_success()
+            
             return MCPCallResult(
                 success=True,
                 content="\n".join(content_parts) if content_parts else "执行成功（无返回内容）",
@@ -743,6 +904,8 @@ class MCPClientSession:
             error_msg = f"工具调用超时（{self.call_timeout}秒）"
             if tool_name in self._tool_stats:
                 self._tool_stats[tool_name].record_call(False, duration_ms, error_msg)
+            # v1.7.0: 断路器记录失败
+            self._circuit_breaker.record_failure()
             return MCPCallResult(success=False, content=None, error=error_msg, duration_ms=duration_ms)
             
         except Exception as e:
@@ -751,6 +914,8 @@ class MCPClientSession:
             logger.error(f"[{self.server_name}] 调用工具 {tool_name} 失败: {e}")
             if tool_name in self._tool_stats:
                 self._tool_stats[tool_name].record_call(False, duration_ms, error_msg)
+            # v1.7.0: 断路器记录失败
+            self._circuit_breaker.record_failure()
             # 检查是否是连接问题
             if "connection" in error_msg.lower() or "closed" in error_msg.lower():
                 self._connected = False
@@ -1365,6 +1530,7 @@ class MCPClientManager:
                     "supports_prompts": client.supports_prompts,  # v1.2.0
                     "transport": client.config.transport.value,
                     "consecutive_failures": client.stats.consecutive_failures,
+                    "circuit_breaker": client.get_circuit_breaker_status(),  # v1.7.0
                 }
                 for name, client in self._clients.items()
             },
