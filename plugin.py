@@ -1131,7 +1131,7 @@ class MCPStatusCommand(BaseCommand):
 
     command_name = "mcp_status_command"
     command_description = "查看 MCP 服务器连接状态和统计信息"
-    command_pattern = r"^[/／]mcp(?:\s+(?P<subcommand>status|tools|stats|reconnect|trace|cache|perm|export))?(?:\s+(?P<arg>\S+))?$"
+    command_pattern = r"^[/／]mcp(?:\s+(?P<subcommand>status|tools|stats|reconnect|trace|cache|perm|export|search))?(?:\s+(?P<arg>.+))?$"
 
     async def execute(self):
         """执行命令"""
@@ -1156,6 +1156,10 @@ class MCPStatusCommand(BaseCommand):
         # v1.6.0: 导出命令
         if subcommand == "export":
             return await self._handle_export(arg)
+        
+        # v1.7.0: 工具搜索命令
+        if subcommand == "search":
+            return await self._handle_search(arg)
 
         result = self._format_output(subcommand, arg)
         await self.send_text(result)
@@ -1324,6 +1328,68 @@ class MCPStatusCommand(BaseCommand):
         
         return (True, None, True)
 
+    async def _handle_search(self, query: str = None):
+        """v1.7.0: 处理工具搜索命令"""
+        if not query or not query.strip():
+            # 显示使用帮助
+            help_text = """🔍 工具搜索
+
+用法: /mcp search <关键词>
+
+示例:
+  /mcp search time     搜索包含 time 的工具
+  /mcp search fetch    搜索包含 fetch 的工具
+  /mcp search *        列出所有工具
+
+支持模糊匹配工具名称和描述"""
+            await self.send_text(help_text)
+            return (True, None, True)
+
+        query = query.strip().lower()
+        tools = mcp_manager.all_tools
+
+        if not tools:
+            await self.send_text("🔍 当前没有可用的 MCP 工具")
+            return (True, None, True)
+
+        # 搜索匹配的工具
+        matched = []
+        for tool_key, (tool_info, client) in tools.items():
+            tool_name = tool_key.lower()
+            tool_desc = (tool_info.description or "").lower()
+
+            # * 表示列出所有
+            if query == "*":
+                matched.append((tool_key, tool_info, client))
+            elif query in tool_name or query in tool_desc:
+                matched.append((tool_key, tool_info, client))
+
+        if not matched:
+            await self.send_text(f"🔍 未找到匹配 '{query}' 的工具")
+            return (True, None, True)
+
+        # 按服务器分组显示
+        by_server: Dict[str, List[Tuple[str, Any]]] = {}
+        for tool_key, tool_info, client in matched:
+            server_name = tool_info.server_name
+            if server_name not in by_server:
+                by_server[server_name] = []
+            by_server[server_name].append((tool_key, tool_info))
+
+        lines = [f"🔍 搜索结果: {len(matched)} 个工具匹配 '{query}'"]
+
+        for server_name, tool_list in by_server.items():
+            lines.append(f"\n📦 {server_name} ({len(tool_list)} 个):")
+            for tool_key, tool_info in tool_list[:10]:  # 每个服务器最多显示 10 个
+                desc = tool_info.description[:40] + "..." if len(tool_info.description) > 40 else tool_info.description
+                lines.append(f"  • {tool_key}")
+                lines.append(f"    {desc}")
+            if len(tool_list) > 10:
+                lines.append(f"  ... 还有 {len(tool_list) - 10} 个")
+
+        await self.send_text("\n".join(lines))
+        return (True, None, True)
+
     def _format_output(self, subcommand: str, server_name: str = None) -> str:
         """格式化输出"""
         status = mcp_manager.get_status()
@@ -1375,7 +1441,7 @@ class MCPStatusCommand(BaseCommand):
             lines.append(f"  运行: {g['uptime_seconds']:.0f}秒")
 
         if not lines:
-            lines.append("使用方法: /mcp [status|tools|stats|reconnect|trace|cache|perm|export|import] [参数]")
+            lines.append("使用方法: /mcp [status|tools|stats|reconnect|trace|cache|perm|export|import|search] [参数]")
 
         return "\n".join(lines)
 

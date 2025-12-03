@@ -68,6 +68,7 @@ cp config.example.toml config.toml
 | `/mcp perm` | 查看权限配置 |
 | `/mcp import <json>` | 🆕 导入 Claude Desktop 配置 |
 | `/mcp export [claude]` | 🆕 导出配置 |
+| `/mcp search <关键词>` | 🆕 搜索工具 |
 
 ---
 
@@ -81,7 +82,8 @@ cp config.example.toml config.toml
 
 ### v1.7.0 新增
 - ⚡ **断路器模式** - 故障服务器快速失败，避免拖慢整体响应
-- 🔄 **状态实时刷新** - WebUI 每 10 秒自动更新连接状态
+- 🔄 **状态实时刷新** - WebUI 自动更新连接状态（可配置间隔）
+- 🔍 **工具搜索** - `/mcp search <关键词>` 快速查找工具
 
 ### v1.6.0 新增
 - 📥 **配置导入** - 从 Claude Desktop 格式一键导入
