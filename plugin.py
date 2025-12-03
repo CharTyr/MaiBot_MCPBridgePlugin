@@ -1697,7 +1697,7 @@ class MCPBridgePlugin(BasePlugin):
     """MCP 桥接插件 v1.4.0 - 将 MCP 服务器的工具桥接到 MaiBot"""
     
     plugin_name: str = "mcp_bridge_plugin"
-    enable_plugin: bool = True
+    enable_plugin: bool = False  # 默认禁用，用户需在 WebUI 手动启用
     dependencies: List[str] = []
     python_dependencies: List[str] = ["mcp"]
     config_file_name: str = "config.toml"
