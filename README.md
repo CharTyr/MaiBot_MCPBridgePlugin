@@ -66,6 +66,8 @@ cp config.example.toml config.toml
 | `/mcp trace` | 查看调用记录 |
 | `/mcp cache` | 查看缓存状态 |
 | `/mcp perm` | 查看权限配置 |
+| `/mcp import <json>` | 🆕 导入 Claude Desktop 配置 |
+| `/mcp export [claude]` | 🆕 导出配置 |
 
 ---
 
@@ -76,6 +78,10 @@ cp config.example.toml config.toml
 - 📡 支持 stdio / SSE / HTTP / Streamable HTTP
 - 🔄 自动重试、心跳检测、断线重连
 - 🖥️ WebUI 完整配置支持
+
+### v1.6.0 新增
+- 📥 **配置导入** - 从 Claude Desktop 格式一键导入
+- 📤 **配置导出** - 导出为 Claude Desktop / Kiro / MaiBot 格式
 
 ### v1.4.0 新增
 - 🚫 **工具禁用** - WebUI 直接禁用不想用的工具
@@ -163,6 +169,37 @@ cache_exclude_tools = "mcp_*_time_*"
 
 **Q: 如何手动重连？**
 - `/mcp reconnect` 或 `/mcp reconnect 服务器名`
+
+---
+
+## 📥 配置导入导出（v1.6.0）
+
+### 从 Claude Desktop 导入
+
+如果你已有 Claude Desktop 的 MCP 配置，可以直接导入：
+
+```
+/mcp import {"mcpServers":{"time":{"command":"uvx","args":["mcp-server-time"]},"fetch":{"command":"uvx","args":["mcp-server-fetch"]}}}
+```
+
+支持的格式：
+- Claude Desktop 格式（`mcpServers` 对象）
+- Kiro MCP 格式
+- MaiBot 格式（数组）
+
+### 导出配置
+
+```
+/mcp export           # 导出为 Claude Desktop 格式（默认）
+/mcp export claude    # 导出为 Claude Desktop 格式
+/mcp export kiro      # 导出为 Kiro MCP 格式
+/mcp export maibot    # 导出为 MaiBot 格式
+```
+
+### 注意事项
+- 导入时会自动跳过同名服务器
+- 导入后需要发送 `/mcp reconnect` 使配置生效
+- 支持 stdio、sse、http、streamable_http 全部传输类型
 
 ---
 
