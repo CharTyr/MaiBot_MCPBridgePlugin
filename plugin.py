@@ -1,6 +1,11 @@
 """
-MCP 桥接插件 v1.5.0
+MCP 桥接插件 v1.5.1
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.5.1 易用性优化:
+- 新增「快速添加服务器」表单式配置，无需手写 JSON
+- 支持填写名称、类型、URL、命令、参数、鉴权头
+- 保存后自动合并到服务器列表
 
 v1.5.0 性能优化:
 - 服务器并行连接：多个服务器同时连接，大幅减少启动时间
@@ -1366,7 +1371,8 @@ class MCPBridgePlugin(BasePlugin):
     
     config_section_descriptions = {
         "guide": "📖 快速入门",
-        "servers": "🔌 服务器配置",
+        "quick_add": "➕ 快速添加服务器",
+        "servers": "🔌 服务器列表",
         "status": "📊 运行状态",
         "plugin": "插件开关",
         "settings": "⚙️ 高级设置",
@@ -1684,15 +1690,83 @@ class MCPBridgePlugin(BasePlugin):
                 order=10,
             ),
         },
+        # v1.5.1: 快速添加服务器（表单式配置）
+        "quick_add": {
+            "server_name": ConfigField(
+                type=str,
+                default="",
+                description="服务器唯一名称（英文，如 time-server）",
+                label="📛 服务器名称",
+                placeholder="my-mcp-server",
+                hint="必填，用于标识服务器",
+                order=1,
+            ),
+            "server_type": ConfigField(
+                type=str,
+                default="streamable_http",
+                description="传输类型",
+                label="📡 传输类型",
+                choices=["streamable_http", "http", "sse", "stdio"],
+                hint="远程服务器选 streamable_http/http/sse，本地选 stdio",
+                order=2,
+            ),
+            "server_url": ConfigField(
+                type=str,
+                default="",
+                description="服务器 URL（远程服务器必填）",
+                label="🌐 服务器 URL",
+                placeholder="https://mcp.api-inference.modelscope.cn/server/xxx",
+                hint="streamable_http/http/sse 类型必填",
+                order=3,
+            ),
+            "server_command": ConfigField(
+                type=str,
+                default="",
+                description="启动命令（stdio 类型必填）",
+                label="⌨️ 启动命令",
+                placeholder="uvx 或 npx",
+                hint="stdio 类型必填，如 uvx、npx、python",
+                order=4,
+            ),
+            "server_args": ConfigField(
+                type=str,
+                default="",
+                description="命令参数（每行一个）",
+                label="📝 命令参数",
+                input_type="textarea",
+                rows=3,
+                placeholder="mcp-server-fetch",
+                hint="stdio 类型使用，每行一个参数",
+                order=5,
+            ),
+            "server_headers": ConfigField(
+                type=str,
+                default="",
+                description="鉴权头（JSON 格式，可选）",
+                label="🔑 鉴权头（可选）",
+                placeholder='{"Authorization": "Bearer xxx"}',
+                hint="需要鉴权的服务器填写，如 ModelScope 的 API Key",
+                order=6,
+            ),
+            "add_button": ConfigField(
+                type=str,
+                default="填写上方信息后，点击保存将自动添加到服务器列表",
+                description="",
+                label="💡 使用说明",
+                disabled=True,
+                hint="保存配置后，新服务器会自动添加到下方列表。重启 MaiBot 或发送 /mcp reconnect 生效",
+                order=7,
+            ),
+        },
         "servers": {
             "list": ConfigField(
                 type=str,
                 default="[]",
-                description="MCP 服务器列表配置（JSON 数组格式）",
-                label="🔌 服务器列表",
+                description="MCP 服务器列表（JSON 格式，高级用户可直接编辑）",
+                label="🔌 服务器列表（高级）",
                 input_type="textarea",
-                rows=18,
-                hint="⚠️ 格式要求：必须是 JSON 数组！transport 可选: stdio / sse / http / streamable_http",
+                rows=15,
+                hint="⚠️ JSON 数组格式。新手建议使用上方「快速添加」",
                 order=1,
             ),
         },
@@ -1851,6 +1925,127 @@ class MCPBridgePlugin(BasePlugin):
         
         # 注册状态变化回调
         mcp_manager.set_status_change_callback(self._update_status_display)
+        
+        # v1.5.1: 处理快速添加服务器
+        self._process_quick_add_server()
+    
+    def _process_quick_add_server(self) -> None:
+        """v1.5.1: 处理快速添加服务器表单，将新服务器合并到列表"""
+        quick_add = self.config.get("quick_add", {})
+        server_name = quick_add.get("server_name", "").strip()
+        
+        if not server_name:
+            return  # 没有填写名称，跳过
+        
+        server_type = quick_add.get("server_type", "streamable_http")
+        server_url = quick_add.get("server_url", "").strip()
+        server_command = quick_add.get("server_command", "").strip()
+        server_args_str = quick_add.get("server_args", "").strip()
+        server_headers_str = quick_add.get("server_headers", "").strip()
+        
+        # 构建新服务器配置
+        new_server = {
+            "name": server_name,
+            "enabled": True,
+            "transport": server_type,
+        }
+        
+        if server_type == "stdio":
+            if not server_command:
+                logger.warning(f"快速添加: stdio 类型需要填写命令，跳过 {server_name}")
+                return
+            new_server["command"] = server_command
+            if server_args_str:
+                new_server["args"] = [arg.strip() for arg in server_args_str.split("\n") if arg.strip()]
+        else:
+            if not server_url:
+                logger.warning(f"快速添加: {server_type} 类型需要填写 URL，跳过 {server_name}")
+                return
+            new_server["url"] = server_url
+        
+        # 解析鉴权头
+        if server_headers_str:
+            try:
+                headers = json.loads(server_headers_str)
+                if isinstance(headers, dict):
+                    new_server["headers"] = headers
+            except json.JSONDecodeError:
+                logger.warning("快速添加: 鉴权头 JSON 格式错误，已忽略")
+        
+        # 获取现有服务器列表
+        servers_section = self.config.get("servers", {})
+        servers_list_str = servers_section.get("list", "[]") if isinstance(servers_section, dict) else "[]"
+        
+        try:
+            servers_list = json.loads(servers_list_str) if servers_list_str.strip() else []
+        except json.JSONDecodeError:
+            servers_list = []
+        
+        # 检查是否已存在同名服务器
+        for existing in servers_list:
+            if existing.get("name") == server_name:
+                logger.info(f"快速添加: 服务器 {server_name} 已存在，跳过")
+                self._clear_quick_add_fields()
+                return
+        
+        # 添加新服务器
+        servers_list.append(new_server)
+        logger.info(f"快速添加: 已添加服务器 {server_name} ({server_type})")
+        
+        # 更新配置
+        new_list_str = json.dumps(servers_list, ensure_ascii=False, indent=2)
+        if "servers" not in self.config:
+            self.config["servers"] = {}
+        self.config["servers"]["list"] = new_list_str
+        
+        # 清空快速添加字段
+        self._clear_quick_add_fields()
+        
+        # 保存到配置文件
+        self._save_servers_list(new_list_str)
+    
+    def _clear_quick_add_fields(self) -> None:
+        """清空快速添加表单字段"""
+        if "quick_add" not in self.config:
+            self.config["quick_add"] = {}
+        self.config["quick_add"]["server_name"] = ""
+        self.config["quick_add"]["server_url"] = ""
+        self.config["quick_add"]["server_command"] = ""
+        self.config["quick_add"]["server_args"] = ""
+        self.config["quick_add"]["server_headers"] = ""
+    
+    def _save_servers_list(self, servers_json: str) -> None:
+        """保存服务器列表到配置文件"""
+        import tomlkit
+        from tomlkit.items import String, StringType, Trivia
+        
+        try:
+            config_path = Path(__file__).parent / "config.toml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    doc = tomlkit.load(f)
+                
+                if "servers" not in doc:
+                    doc["servers"] = tomlkit.table()
+                
+                # 使用多行字符串
+                ml_string = String(StringType.MLB, servers_json, servers_json, Trivia())
+                doc["servers"]["list"] = ml_string
+                
+                # 清空快速添加字段
+                if "quick_add" in doc:
+                    doc["quick_add"]["server_name"] = ""
+                    doc["quick_add"]["server_url"] = ""
+                    doc["quick_add"]["server_command"] = ""
+                    doc["quick_add"]["server_args"] = ""
+                    doc["quick_add"]["server_headers"] = ""
+                
+                with open(config_path, "w", encoding="utf-8") as f:
+                    tomlkit.dump(doc, f)
+                    
+                logger.info("服务器列表已保存到配置文件")
+        except Exception as e:
+            logger.warning(f"保存服务器列表失败: {e}")
     
     def _get_disabled_tools(self) -> set:
         """v1.4.0: 获取禁用的工具列表"""
