@@ -1165,11 +1165,32 @@ class MCPStatusCommand(BaseCommand):
         await self.send_text(result)
         return (True, None, True)
 
+    def _find_similar_servers(self, name: str, max_results: int = 3) -> List[str]:
+        """查找相似的服务器名称"""
+        name_lower = name.lower()
+        all_servers = list(mcp_manager._clients.keys())
+        
+        # 简单的相似度匹配：包含关系或前缀匹配
+        similar = []
+        for srv in all_servers:
+            srv_lower = srv.lower()
+            if name_lower in srv_lower or srv_lower in name_lower:
+                similar.append(srv)
+            elif srv_lower.startswith(name_lower[:3]) if len(name_lower) >= 3 else False:
+                similar.append(srv)
+        
+        return similar[:max_results]
+
     async def _handle_reconnect(self, server_name: str = None):
         """处理重连请求"""
         if server_name:
             if server_name not in mcp_manager._clients:
-                await self.send_text(f"❌ 服务器 {server_name} 不存在")
+                # 提示相似的服务器名
+                similar = self._find_similar_servers(server_name)
+                msg = f"❌ 服务器 '{server_name}' 不存在"
+                if similar:
+                    msg += f"\n💡 你是不是想找: {', '.join(similar)}"
+                await self.send_text(msg)
                 return (True, None, True)
 
             await self.send_text(f"🔄 正在重连服务器 {server_name}...")
@@ -1206,19 +1227,22 @@ class MCPStatusCommand(BaseCommand):
             records = tool_call_tracer.get_recent(10)
         
         if not records:
-            await self.send_text("🔍 暂无调用追踪记录")
+            await self.send_text("🔍 暂无调用追踪记录\n\n用法: /mcp trace [数量|工具名]")
             return (True, None, True)
         
         lines = [f"🔍 调用追踪记录 ({len(records)} 条)"]
-        for r in reversed(records):
-            status = "✅" if r.success else "❌"
-            cache = "📦" if r.cache_hit else ""
-            post = "🔄" if r.post_processed else ""
+        lines.append("-" * 30)
+        for i, r in enumerate(reversed(records)):
+            status_icon = "✅" if r.success else "❌"
+            cache_tag = " [缓存]" if r.cache_hit else ""
+            post_tag = " [后处理]" if r.post_processed else ""
             ts = time.strftime("%H:%M:%S", time.localtime(r.timestamp))
-            lines.append(f"{status}{cache}{post} [{ts}] {r.tool_name}")
-            lines.append(f"   耗时: {r.duration_ms:.0f}ms | 服务器: {r.server_name}")
+            lines.append(f"{status_icon} [{ts}] {r.tool_name}")
+            lines.append(f"   {r.duration_ms:.0f}ms | {r.server_name}{cache_tag}{post_tag}")
             if r.error:
-                lines.append(f"   错误: {r.error[:60]}")
+                lines.append(f"   错误: {r.error[:50]}")
+            if i < len(records) - 1:
+                lines.append("")
         
         await self.send_text("\n".join(lines))
         return (True, None, True)
@@ -1376,16 +1400,23 @@ class MCPStatusCommand(BaseCommand):
                 by_server[server_name] = []
             by_server[server_name].append((tool_key, tool_info))
 
+        # 如果只有一个服务器或结果较少，显示全部；否则折叠
+        single_server = len(by_server) == 1
         lines = [f"🔍 搜索结果: {len(matched)} 个工具匹配 '{query}'"]
 
-        for server_name, tool_list in by_server.items():
-            lines.append(f"\n📦 {server_name} ({len(tool_list)} 个):")
-            for tool_key, tool_info in tool_list[:10]:  # 每个服务器最多显示 10 个
+        for srv_name, tool_list in by_server.items():
+            lines.append(f"\n📦 {srv_name} ({len(tool_list)} 个):")
+            
+            # 单服务器或结果少于 15 个时显示全部
+            show_all = single_server or len(matched) <= 15
+            display_limit = len(tool_list) if show_all else 5
+            
+            for tool_key, tool_info in tool_list[:display_limit]:
                 desc = tool_info.description[:40] + "..." if len(tool_info.description) > 40 else tool_info.description
                 lines.append(f"  • {tool_key}")
                 lines.append(f"    {desc}")
-            if len(tool_list) > 10:
-                lines.append(f"  ... 还有 {len(tool_list) - 10} 个")
+            if len(tool_list) > display_limit:
+                lines.append(f"  ... 还有 {len(tool_list) - display_limit} 个，用 /mcp search {query} {srv_name} 筛选")
 
         await self.send_text("\n".join(lines))
         return (True, None, True)
@@ -1411,6 +1442,13 @@ class MCPStatusCommand(BaseCommand):
                     enabled = "" if info["enabled"] else " (禁用)"
                     lines.append(f"  {icon} {name}{enabled}")
                     lines.append(f"     {info['transport']} | {info['tools_count']} 工具")
+                    # 显示断路器状态
+                    cb = info.get("circuit_breaker", {})
+                    cb_state = cb.get("state", "closed")
+                    if cb_state == "open":
+                        lines.append(f"     ⚡ 断路器熔断中")
+                    elif cb_state == "half_open":
+                        lines.append(f"     ⚡ 断路器试探中")
                     if info["consecutive_failures"] > 0:
                         lines.append(f"     ⚠️ 连续失败 {info['consecutive_failures']} 次")
 
@@ -1424,12 +1462,21 @@ class MCPStatusCommand(BaseCommand):
                         continue
                     by_server.setdefault(info.server_name, []).append(info.name)
 
+                # 如果指定了服务器名，显示全部工具；否则折叠显示
+                show_all = server_name is not None
+                
                 for srv, tool_list in by_server.items():
                     lines.append(f"  📦 {srv} ({len(tool_list)})")
-                    for t in tool_list[:5]:
-                        lines.append(f"     • {t}")
-                    if len(tool_list) > 5:
-                        lines.append(f"     ... 还有 {len(tool_list) - 5} 个")
+                    if show_all:
+                        # 指定服务器时显示全部
+                        for t in tool_list:
+                            lines.append(f"     • {t}")
+                    else:
+                        # 未指定时折叠显示
+                        for t in tool_list[:5]:
+                            lines.append(f"     • {t}")
+                        if len(tool_list) > 5:
+                            lines.append(f"     ... 还有 {len(tool_list) - 5} 个，用 /mcp tools {srv} 查看全部")
 
         if subcommand in ("stats", "all"):
             g = stats["global"]
@@ -1441,7 +1488,30 @@ class MCPStatusCommand(BaseCommand):
             lines.append(f"  运行: {g['uptime_seconds']:.0f}秒")
 
         if not lines:
-            lines.append("使用方法: /mcp [status|tools|stats|reconnect|trace|cache|perm|export|import|search] [参数]")
+            lines.append("📖 MCP 桥接插件命令帮助")
+            lines.append("")
+            lines.append("状态查询:")
+            lines.append("  /mcp              查看连接状态")
+            lines.append("  /mcp tools        查看所有工具")
+            lines.append("  /mcp tools <服务器> 查看指定服务器工具")
+            lines.append("  /mcp stats        查看调用统计")
+            lines.append("")
+            lines.append("工具搜索:")
+            lines.append("  /mcp search <关键词>  搜索工具")
+            lines.append("  /mcp search *         列出所有工具")
+            lines.append("")
+            lines.append("服务器管理:")
+            lines.append("  /mcp reconnect        重连断开的服务器")
+            lines.append("  /mcp reconnect <名称> 重连指定服务器")
+            lines.append("")
+            lines.append("配置导入导出:")
+            lines.append("  /mcp import <json>    导入配置")
+            lines.append("  /mcp export [格式]    导出配置")
+            lines.append("")
+            lines.append("其他:")
+            lines.append("  /mcp trace   查看调用追踪")
+            lines.append("  /mcp cache   查看缓存状态")
+            lines.append("  /mcp perm    查看权限配置")
 
         return "\n".join(lines)
 
