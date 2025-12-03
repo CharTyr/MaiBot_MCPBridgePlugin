@@ -1,4 +1,4 @@
-# MCP桥接插件 v1.6.0 - 配置文件示例
+# MCP桥接插件 v1.7.0 - 配置文件示例
 # 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
 # 
 # 使用方法：复制此文件为 config.toml，然后根据需要修改配置
@@ -29,8 +29,8 @@
 # ============================================================
 [plugin]
 name = "mcp_bridge_plugin"
-version = "1.6.0"
-config_version = "1.6.0"
+version = "1.7.0"
+config_version = "1.7.0"
 enabled = false  # 默认禁用，在 WebUI 中启用
 
 # ============================================================
