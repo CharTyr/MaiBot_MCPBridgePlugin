@@ -1,6 +1,10 @@
 """
-MCP 桥接插件 v1.4.0
+MCP 桥接插件 v1.4.3
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.4.3 修复:
+- 修复 WebUI 保存配置后多行字符串格式错误导致配置文件无法读取的问题
+- 清理未使用的导入
 
 v1.4.0 新增功能:
 - 工具禁用管理
@@ -9,11 +13,10 @@ v1.4.0 新增功能:
 - 工具权限控制
 """
 
-import asyncio
 import fnmatch
 import hashlib
 import json
-import os
+import re
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -31,11 +34,10 @@ from src.plugin_system import (
     ConfigField,
     ToolParamType,
 )
-from src.plugin_system.base.component_types import ToolInfo, CommandInfo, ComponentType, EventHandlerInfo, EventType
+from src.plugin_system.base.component_types import ToolInfo, ComponentType, EventType
 from src.plugin_system.base.base_events_handler import BaseEventHandler
 
 from .mcp_client import (
-    MCPClientManager,
     MCPServerConfig,
     MCPToolInfo,
     MCPResourceInfo,
@@ -1739,8 +1741,109 @@ class MCPBridgePlugin(BasePlugin):
         },
     }
     
+    @staticmethod
+    def _fix_config_multiline_strings(config_path: Path) -> bool:
+        """修复配置文件中的多行字符串格式问题
+        
+        处理两种情况：
+        1. 带转义 \\n 的单行字符串（json.dumps 生成）
+        2. 跨越多行但使用普通双引号的字符串（控制字符错误）
+        
+        Returns:
+            bool: 是否进行了修复
+        """
+        if not config_path.exists():
+            return False
+        
+        try:
+            content = config_path.read_text(encoding="utf-8")
+            
+            # 情况1: 修复带转义 \n 的单行字符串
+            # 匹配: key = "内容包含\n的字符串"
+            pattern1 = r'^(\s*\w+\s*=\s*)"((?:[^"\\]|\\.)*\\n(?:[^"\\]|\\.)*)"(\s*)$'
+            
+            # 情况2: 修复跨越多行的普通双引号字符串
+            # 匹配: key = "第一行
+            #       第二行
+            #       第三行"
+            pattern2_start = r'^(\s*\w+\s*=\s*)"([^"]*?)$'  # 开始行
+            pattern2_end = r'^([^"]*)"(\s*)$'  # 结束行
+            
+            lines = content.split("\n")
+            fixed_lines = []
+            modified = False
+            
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                
+                # 情况1: 单行带转义换行符
+                match1 = re.match(pattern1, line)
+                if match1:
+                    prefix = match1.group(1)
+                    value = match1.group(2)
+                    suffix = match1.group(3)
+                    # 将转义的换行符还原为实际换行符
+                    unescaped = value.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\\\", "\\")
+                    fixed_line = f'{prefix}"""{unescaped}"""{suffix}'
+                    fixed_lines.append(fixed_line)
+                    modified = True
+                    i += 1
+                    continue
+                
+                # 情况2: 跨越多行的字符串
+                match2_start = re.match(pattern2_start, line)
+                if match2_start:
+                    prefix = match2_start.group(1)
+                    first_part = match2_start.group(2)
+                    
+                    # 收集后续行直到找到结束引号
+                    multiline_parts = [first_part]
+                    j = i + 1
+                    found_end = False
+                    
+                    while j < len(lines):
+                        next_line = lines[j]
+                        match2_end = re.match(pattern2_end, next_line)
+                        if match2_end:
+                            multiline_parts.append(match2_end.group(1))
+                            suffix = match2_end.group(2)
+                            found_end = True
+                            j += 1
+                            break
+                        else:
+                            multiline_parts.append(next_line)
+                            j += 1
+                    
+                    if found_end and len(multiline_parts) > 1:
+                        # 合并为三引号字符串
+                        full_value = "\n".join(multiline_parts)
+                        fixed_line = f'{prefix}"""{full_value}"""{suffix}'
+                        fixed_lines.append(fixed_line)
+                        modified = True
+                        i = j
+                        continue
+                
+                fixed_lines.append(line)
+                i += 1
+            
+            if modified:
+                config_path.write_text("\n".join(fixed_lines), encoding="utf-8")
+                logger.info("已自动修复配置文件中的多行字符串格式")
+                return True
+            
+            return False
+        except Exception as e:
+            logger.warning(f"修复配置文件格式失败: {e}")
+            return False
+    
     def __init__(self, *args, **kwargs):
         global _plugin_instance
+        
+        # 在父类初始化前尝试修复配置文件格式
+        config_path = Path(__file__).parent / "config.toml"
+        self._fix_config_multiline_strings(config_path)
+        
         super().__init__(*args, **kwargs)
         self._initialized = False
         _plugin_instance = self
@@ -1896,7 +1999,7 @@ class MCPBridgePlugin(BasePlugin):
                 logger.warning("服务器配置是单个对象，已自动转换为数组")
                 return [parsed]
             else:
-                logger.error(f"服务器配置格式错误: 期望数组或对象")
+                logger.error("服务器配置格式错误: 期望数组或对象")
                 return []
         except json.JSONDecodeError as e:
             logger.warning(f"JSON 解析失败: {e}")
@@ -1980,7 +2083,10 @@ class MCPBridgePlugin(BasePlugin):
                 
                 if "tools" not in doc:
                     doc["tools"] = tomlkit.table()
-                doc["tools"]["tool_list"] = tool_list_text
+                # 使用 tomlkit 多行字符串避免控制字符问题
+                from tomlkit.items import String, StringType, Trivia
+                ml_string = String(StringType.MLB, tool_list_text, tool_list_text, Trivia())
+                doc["tools"]["tool_list"] = ml_string
                 
                 with open(config_path, "w", encoding="utf-8") as f:
                     tomlkit.dump(doc, f)
@@ -2034,7 +2140,10 @@ class MCPBridgePlugin(BasePlugin):
                 
                 if "status" not in doc:
                     doc["status"] = tomlkit.table()
-                doc["status"]["connection_status"] = status_text
+                # 使用 tomlkit 多行字符串避免控制字符问题
+                from tomlkit.items import String, StringType, Trivia
+                ml_string = String(StringType.MLB, status_text, status_text, Trivia())
+                doc["status"]["connection_status"] = ml_string
                 
                 with open(config_path, "w", encoding="utf-8") as f:
                     tomlkit.dump(doc, f)
