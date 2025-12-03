@@ -1,6 +1,10 @@
 """
-MCP 桥接插件 v1.4.4
+MCP 桥接插件 v1.5.0
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.5.0 性能优化:
+- 服务器并行连接：多个服务器同时连接，大幅减少启动时间
+- 连接耗时统计：日志显示并行连接总耗时
 
 v1.4.4 修复:
 - 修复首次生成默认配置文件时多行字符串导致 TOML 解析失败的问题
@@ -1855,7 +1859,8 @@ class MCPBridgePlugin(BasePlugin):
         return {t.strip() for t in disabled_str.strip().split("\n") if t.strip()}
     
     async def _async_connect_servers(self) -> None:
-        """异步连接所有配置的 MCP 服务器"""
+        """异步连接所有配置的 MCP 服务器（v1.5.0: 并行连接优化）"""
+        import asyncio
         settings = self.config.get("settings", {})
         
         servers_section = self.config.get("servers", [])
@@ -1884,13 +1889,13 @@ class MCPBridgePlugin(BasePlugin):
         
         tool_prefix = settings.get("tool_prefix", "mcp")
         disabled_tools = self._get_disabled_tools()
-        registered_count = 0
+        enable_resources = settings.get("enable_resources", False)
+        enable_prompts = settings.get("enable_prompts", False)
         
-        logger.info(f"准备连接 {len(servers_config)} 个 MCP 服务器")
-        
+        # 解析所有服务器配置
+        enabled_configs: List[MCPServerConfig] = []
         for idx, server_conf in enumerate(servers_config):
             server_name = server_conf.get("name", f"unknown_{idx}")
-            logger.info(f"[{idx+1}/{len(servers_config)}] 处理服务器: {server_name}")
             
             if not server_conf.get("enabled", True):
                 logger.info(f"服务器 {server_name} 已禁用，跳过")
@@ -1898,50 +1903,86 @@ class MCPBridgePlugin(BasePlugin):
             
             try:
                 config = self._parse_server_config(server_conf)
+                enabled_configs.append(config)
             except Exception as e:
                 logger.error(f"解析服务器 {server_name} 配置失败: {e}")
-                continue
-            
+        
+        if not enabled_configs:
+            logger.warning("没有已启用的 MCP 服务器")
+            self._initialized = True
+            return
+        
+        logger.info(f"准备并行连接 {len(enabled_configs)} 个 MCP 服务器")
+        
+        # v1.5.0: 并行连接所有服务器
+        async def connect_single_server(config: MCPServerConfig) -> Tuple[MCPServerConfig, bool]:
+            """连接单个服务器"""
             logger.info(f"正在连接服务器: {config.name} ({config.transport.value})")
-            success = await mcp_manager.add_server(config)
-            if not success:
-                logger.warning(f"服务器 {config.name} 连接失败")
-                continue
+            try:
+                success = await mcp_manager.add_server(config)
+                if success:
+                    logger.info(f"✅ 服务器 {config.name} 连接成功")
+                    # 获取资源和提示模板
+                    if enable_resources:
+                        try:
+                            await mcp_manager.fetch_resources_for_server(config.name)
+                        except Exception as e:
+                            logger.warning(f"服务器 {config.name} 获取资源列表失败: {e}")
+                    if enable_prompts:
+                        try:
+                            await mcp_manager.fetch_prompts_for_server(config.name)
+                        except Exception as e:
+                            logger.warning(f"服务器 {config.name} 获取提示模板列表失败: {e}")
+                else:
+                    logger.warning(f"❌ 服务器 {config.name} 连接失败")
+                return config, success
+            except Exception as e:
+                logger.error(f"❌ 服务器 {config.name} 连接异常: {e}")
+                return config, False
+        
+        # 并行执行所有连接
+        start_time = time.time()
+        results = await asyncio.gather(
+            *[connect_single_server(cfg) for cfg in enabled_configs],
+            return_exceptions=True
+        )
+        connect_duration = time.time() - start_time
+        
+        # 统计连接结果
+        success_count = 0
+        failed_count = 0
+        for result in results:
+            if isinstance(result, Exception):
+                failed_count += 1
+                logger.error(f"连接任务异常: {result}")
+            elif isinstance(result, tuple):
+                _, success = result
+                if success:
+                    success_count += 1
+                else:
+                    failed_count += 1
+        
+        logger.info(f"并行连接完成: {success_count} 成功, {failed_count} 失败, 耗时 {connect_duration:.2f}s")
+        
+        # 注册所有工具
+        from src.plugin_system.core.component_registry import component_registry
+        registered_count = 0
+        
+        for tool_key, (tool_info, _) in mcp_manager.all_tools.items():
+            tool_name = tool_key.replace("-", "_").replace(".", "_")
+            is_disabled = tool_name in disabled_tools
             
-            logger.info(f"服务器 {config.name} 连接成功")
+            info, tool_class = mcp_tool_registry.register_tool(
+                tool_key, tool_info, tool_prefix, disabled=is_disabled
+            )
+            info.plugin_name = self.plugin_name
             
-            if settings.get("enable_resources", False):
-                try:
-                    await mcp_manager.fetch_resources_for_server(config.name)
-                except Exception as e:
-                    logger.warning(f"服务器 {config.name} 获取资源列表失败: {e}")
-            
-            if settings.get("enable_prompts", False):
-                try:
-                    await mcp_manager.fetch_prompts_for_server(config.name)
-                except Exception as e:
-                    logger.warning(f"服务器 {config.name} 获取提示模板列表失败: {e}")
-            
-            # 动态注册工具
-            from src.plugin_system.core.component_registry import component_registry
-            
-            for tool_key, (tool_info, _) in mcp_manager.all_tools.items():
-                if tool_info.server_name == config.name:
-                    # v1.4.0: 检查是否禁用
-                    tool_name = tool_key.replace("-", "_").replace(".", "_")
-                    is_disabled = tool_name in disabled_tools
-                    
-                    info, tool_class = mcp_tool_registry.register_tool(
-                        tool_key, tool_info, tool_prefix, disabled=is_disabled
-                    )
-                    info.plugin_name = self.plugin_name
-                    
-                    if component_registry.register_component(info, tool_class):
-                        registered_count += 1
-                        status = "🚫" if is_disabled else "✅"
-                        logger.info(f"{status} 注册 MCP 工具: {tool_class.name}")
-                    else:
-                        logger.warning(f"❌ 注册 MCP 工具失败: {tool_class.name}")
+            if component_registry.register_component(info, tool_class):
+                registered_count += 1
+                status = "🚫" if is_disabled else "✅"
+                logger.info(f"{status} 注册 MCP 工具: {tool_class.name}")
+            else:
+                logger.warning(f"❌ 注册 MCP 工具失败: {tool_class.name}")
         
         self._initialized = True
         logger.info(f"MCP 桥接插件初始化完成，已注册 {registered_count} 个工具")
