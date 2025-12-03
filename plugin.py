@@ -122,7 +122,7 @@ class ToolCallTracer:
         self._log_enabled: bool = False
         self._log_path: Optional[Path] = None
     
-    def configure(self, enabled: bool, max_records: int, log_enabled: bool, log_path: Optional[Path] = None):
+    def configure(self, enabled: bool, max_records: int, log_enabled: bool, log_path: Optional[Path] = None) -> None:
         """配置追踪器"""
         self._enabled = enabled
         self._records = deque(self._records, maxlen=max_records)
@@ -200,7 +200,7 @@ class ToolCallCache:
         self._exclude_patterns: List[str] = []
         self._stats = {"hits": 0, "misses": 0}
     
-    def configure(self, enabled: bool, ttl: int, max_entries: int, exclude_tools: str):
+    def configure(self, enabled: bool, ttl: int, max_entries: int, exclude_tools: str) -> None:
         """配置缓存"""
         self._enabled = enabled
         self._ttl = ttl
@@ -334,7 +334,7 @@ class PermissionChecker:
         rules_json: str,
         quick_deny_groups: str = "",
         quick_allow_users: str = "",
-    ):
+    ) -> None:
         """配置权限检查器"""
         self._enabled = enabled
         self._default_mode = default_mode if default_mode in ("allow_all", "deny_all") else "allow_all"
@@ -1133,7 +1133,7 @@ class MCPStatusCommand(BaseCommand):
     command_description = "查看 MCP 服务器连接状态和统计信息"
     command_pattern = r"^[/／]mcp(?:\s+(?P<subcommand>status|tools|stats|reconnect|trace|cache|perm|export|search))?(?:\s+(?P<arg>.+))?$"
 
-    async def execute(self):
+    async def execute(self) -> Tuple[bool, Optional[str], bool]:
         """执行命令"""
         subcommand = self.matched_groups.get("subcommand", "status") or "status"
         arg = self.matched_groups.get("arg")
@@ -1181,7 +1181,7 @@ class MCPStatusCommand(BaseCommand):
         
         return similar[:max_results]
 
-    async def _handle_reconnect(self, server_name: str = None):
+    async def _handle_reconnect(self, server_name: Optional[str] = None) -> Tuple[bool, Optional[str], bool]:
         """处理重连请求"""
         if server_name:
             if server_name not in mcp_manager._clients:
@@ -1213,7 +1213,7 @@ class MCPStatusCommand(BaseCommand):
 
         return (True, None, True)
     
-    async def _handle_trace(self, arg: str = None):
+    async def _handle_trace(self, arg: Optional[str] = None) -> Tuple[bool, Optional[str], bool]:
         """v1.4.0: 处理追踪命令"""
         if arg and arg.isdigit():
             # /mcp trace 20 - 最近 N 条
@@ -1247,7 +1247,7 @@ class MCPStatusCommand(BaseCommand):
         await self.send_text("\n".join(lines))
         return (True, None, True)
     
-    async def _handle_cache(self, arg: str = None):
+    async def _handle_cache(self, arg: Optional[str] = None) -> Tuple[bool, Optional[str], bool]:
         """v1.4.0: 处理缓存命令"""
         if arg == "clear":
             tool_call_cache.clear()
@@ -1266,7 +1266,7 @@ class MCPStatusCommand(BaseCommand):
         await self.send_text("\n".join(lines))
         return (True, None, True)
     
-    async def _handle_perm(self, arg: str = None):
+    async def _handle_perm(self, arg: Optional[str] = None) -> Tuple[bool, Optional[str], bool]:
         """v1.4.0: 处理权限命令"""
         global _plugin_instance
         
@@ -1309,7 +1309,7 @@ class MCPStatusCommand(BaseCommand):
         
         return (True, None, True)
     
-    async def _handle_export(self, format_type: str = None):
+    async def _handle_export(self, format_type: Optional[str] = None) -> Tuple[bool, Optional[str], bool]:
         """v1.6.0: 处理导出命令"""
         global _plugin_instance
         
@@ -1352,7 +1352,7 @@ class MCPStatusCommand(BaseCommand):
         
         return (True, None, True)
 
-    async def _handle_search(self, query: str = None):
+    async def _handle_search(self, query: Optional[str] = None) -> Tuple[bool, Optional[str], bool]:
         """v1.7.0: 处理工具搜索命令"""
         if not query or not query.strip():
             # 显示使用帮助
@@ -1524,7 +1524,7 @@ class MCPImportCommand(BaseCommand):
     # 匹配 /mcp import 后面的所有内容（包括多行 JSON）
     command_pattern = r"^[/／]mcp\s+import(?:\s+(?P<content>.+))?$"
 
-    async def execute(self):
+    async def execute(self) -> Tuple[bool, Optional[str], bool]:
         """执行导入命令"""
         global _plugin_instance
         
@@ -1643,7 +1643,7 @@ class MCPStartupHandler(BaseEventHandler):
     weight = 0
     intercept_message = False
     
-    async def execute(self, message):
+    async def execute(self, message: Optional[Any]) -> Tuple[bool, bool, Optional[str], None, None]:
         """处理启动事件"""
         global _plugin_instance
         
@@ -1671,7 +1671,7 @@ class MCPStopHandler(BaseEventHandler):
     weight = 0
     intercept_message = False
     
-    async def execute(self, message):
+    async def execute(self, message: Optional[Any]) -> Tuple[bool, bool, Optional[str], None, None]:
         """处理停止事件"""
         global _plugin_instance
         
