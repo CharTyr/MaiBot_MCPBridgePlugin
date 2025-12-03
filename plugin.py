@@ -1388,10 +1388,10 @@ class MCPBridgePlugin(BasePlugin):
         "quick_add": "➕ 快速添加服务器",
         "servers": "🔌 服务器列表",
         "status": "📊 运行状态",
-        "plugin": "插件开关",
         "settings": "⚙️ 高级设置",
         "tools": "🔧 工具管理",
         "permissions": "🔐 权限控制",
+        "plugin": "🔘 插件开关",
     }
     
     config_schema: dict = {
