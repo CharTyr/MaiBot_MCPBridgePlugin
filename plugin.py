@@ -1,6 +1,10 @@
 """
-MCP 桥接插件 v1.4.3
+MCP 桥接插件 v1.4.4
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.4.4 修复:
+- 修复首次生成默认配置文件时多行字符串导致 TOML 解析失败的问题
+- 简化 config_schema 默认值，避免主程序 json.dumps 产生无效 TOML
 
 v1.4.3 修复:
 - 修复 WebUI 保存配置后多行字符串格式错误导致配置文件无法读取的问题
@@ -1371,24 +1375,7 @@ class MCPBridgePlugin(BasePlugin):
         "guide": {
             "quick_start": ConfigField(
                 type=str,
-                default="""🎯 三步开始使用：
-1. 在下方「服务器配置」添加 MCP 服务器
-2. 将 enabled 改为 true 启用服务器
-3. 重启 MaiBot 或发送 /mcp reconnect
-
-📝 配置示例（复制到服务器列表）：
-
-【免费服务器】
-{"name": "time", "enabled": true, "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}
-
-【带鉴权的服务器】
-{"name": "my-server", "enabled": true, "transport": "streamable_http", "url": "https://mcp.xxx.com/mcp", "headers": {"Authorization": "Bearer 你的密钥"}}
-
-【本地服务器】(需要 uvx)
-{"name": "fetch", "enabled": true, "transport": "stdio", "command": "uvx", "args": ["mcp-server-fetch"]}
-
-📚 获取服务器: mcp.modelscope.cn | smithery.ai
-💡 命令: /mcp status | tools | reconnect""",
+                default="见 README.md",  # 简化默认值，避免多行问题
                 description="新手快速入门指南",
                 label="📖 快速入门指南",
                 input_type="textarea",
@@ -1545,12 +1532,7 @@ class MCPBridgePlugin(BasePlugin):
             ),
             "post_process_prompt": ConfigField(
                 type=str,
-                default="""用户问题：{query}
-
-工具返回内容：
-{result}
-
-请从上述内容中提取与用户问题最相关的关键信息，简洁准确地输出：""",
+                default="用户问题：{query}\\n\\n工具返回内容：\\n{result}\\n\\n请从上述内容中提取与用户问题最相关的关键信息，简洁准确地输出：",
                 description="📋 后处理提示词模板",
                 label="📋 后处理提示词模板",
                 input_type="textarea",
@@ -1701,28 +1683,12 @@ class MCPBridgePlugin(BasePlugin):
         "servers": {
             "list": ConfigField(
                 type=str,
-                default='''[
-  {
-    "name": "time-mcp-server",
-    "enabled": false,
-    "transport": "streamable_http",
-    "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
-  },
-  {
-    "name": "fetch-local",
-    "enabled": false,
-    "transport": "stdio",
-    "command": "uvx",
-    "args": ["mcp-server-fetch"]
-  }
-]''',
+                default="[]",
                 description="MCP 服务器列表配置（JSON 数组格式）",
                 label="🔌 服务器列表",
                 input_type="textarea",
                 rows=18,
-                hint="""⚠️ 格式要求：必须是 JSON 数组！
-• transport 可选: stdio / sse / http / streamable_http
-• stdio 类型需要 command/args/env 字段，其他类型需要 url 字段""",
+                hint="⚠️ 格式要求：必须是 JSON 数组！transport 可选: stdio / sse / http / streamable_http",
                 order=1,
             ),
         },
