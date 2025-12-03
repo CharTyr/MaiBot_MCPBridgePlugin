@@ -46,6 +46,7 @@ v1.4.0 新增功能:
 - 工具权限控制
 """
 
+import asyncio
 import fnmatch
 import hashlib
 import json
@@ -53,7 +54,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 
@@ -1514,6 +1515,9 @@ class MCPStartupHandler(BaseEventHandler):
         
         await mcp_manager.start_heartbeat()
         
+        # v1.6.0: 启动配置文件监控（用于 WebUI 导入）
+        await _plugin_instance._start_config_watcher()
+        
         return (True, True, None, None, None)
 
 
@@ -1528,7 +1532,13 @@ class MCPStopHandler(BaseEventHandler):
     
     async def execute(self, message):
         """处理停止事件"""
+        global _plugin_instance
+        
         logger.info("MCP 桥接插件收到 ON_STOP 事件，正在关闭...")
+        
+        # v1.6.0: 停止配置文件监控
+        if _plugin_instance:
+            await _plugin_instance._stop_config_watcher()
         
         await mcp_manager.shutdown()
         mcp_tool_registry.clear()
@@ -1610,7 +1620,7 @@ class MCPBridgePlugin(BasePlugin):
                 input_type="textarea",
                 rows=8,
                 placeholder='{"mcpServers":{"time":{"command":"uvx","args":["mcp-server-time"]}}}',
-                hint="支持 Claude Desktop、Kiro、MaiBot 格式。保存后自动导入，需发送 /mcp reconnect 生效",
+                hint="粘贴配置后点击保存，2秒内自动导入。查看下方「导入结果」确认状态",
                 order=1,
             ),
             "import_result": ConfigField(
@@ -2322,6 +2332,147 @@ class MCPBridgePlugin(BasePlugin):
                     tomlkit.dump(doc, f)
         except Exception as e:
             logger.warning(f"保存导入结果失败: {e}")
+
+    async def _start_config_watcher(self) -> None:
+        """v1.6.0: 启动配置文件监控（用于 WebUI 实时导入）"""
+        self._config_watcher_running = True
+        self._config_watcher_task = asyncio.create_task(self._config_watcher_loop())
+        logger.info("配置文件监控已启动")
+
+    async def _stop_config_watcher(self) -> None:
+        """v1.6.0: 停止配置文件监控"""
+        self._config_watcher_running = False
+        if hasattr(self, "_config_watcher_task") and self._config_watcher_task:
+            self._config_watcher_task.cancel()
+            try:
+                await self._config_watcher_task
+            except asyncio.CancelledError:
+                pass
+            self._config_watcher_task = None
+        logger.info("配置文件监控已停止")
+
+    async def _config_watcher_loop(self) -> None:
+        """v1.6.0: 配置文件监控循环"""
+        import tomlkit
+
+        config_path = Path(__file__).parent / "config.toml"
+        last_mtime = config_path.stat().st_mtime if config_path.exists() else 0
+
+        while self._config_watcher_running:
+            try:
+                await asyncio.sleep(2)  # 每 2 秒检查一次
+
+                if not config_path.exists():
+                    continue
+
+                current_mtime = config_path.stat().st_mtime
+                if current_mtime <= last_mtime:
+                    continue
+
+                last_mtime = current_mtime
+                logger.debug("检测到配置文件变化，检查是否有导入请求...")
+
+                # 读取配置文件
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        doc = tomlkit.load(f)
+                except Exception as e:
+                    logger.warning(f"读取配置文件失败: {e}")
+                    continue
+
+                # 检查是否有导入配置
+                import_export = doc.get("import_export", {})
+                import_config = import_export.get("import_config", "")
+
+                if not import_config or not str(import_config).strip():
+                    continue
+
+                import_config_str = str(import_config).strip()
+                logger.info(f"检测到 WebUI 导入请求，开始处理...")
+
+                # 执行导入
+                await self._execute_webui_import(import_config_str, doc, config_path)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"配置监控循环出错: {e}")
+                await asyncio.sleep(5)
+
+    async def _execute_webui_import(self, import_config: str, doc, config_path: Path) -> None:
+        """v1.6.0: 执行 WebUI 导入"""
+        import tomlkit
+        from tomlkit.items import String, StringType, Trivia
+
+        # 获取现有服务器
+        servers_section = doc.get("servers", {})
+        servers_list_str = str(servers_section.get("list", "[]"))
+
+        try:
+            existing_servers = json.loads(servers_list_str) if servers_list_str.strip() else []
+        except json.JSONDecodeError:
+            existing_servers = []
+
+        existing_names = {srv.get("name", "") for srv in existing_servers if isinstance(srv, dict)}
+
+        # 执行导入
+        result = ConfigConverter.import_from_string(import_config, existing_names)
+
+        # 构建结果消息
+        lines = []
+
+        if not result.success:
+            lines.append("❌ 导入失败:")
+            for err in result.errors:
+                lines.append(f"  • {err}")
+        elif not result.servers:
+            lines.append("⚠️ 没有新服务器可导入")
+            if result.skipped:
+                lines.append(f"跳过: {', '.join(result.skipped[:5])}")
+        else:
+            # 合并到现有列表
+            new_servers = existing_servers + result.servers
+            new_list_str = json.dumps(new_servers, ensure_ascii=False, indent=2)
+
+            # 更新 servers.list
+            if "servers" not in doc:
+                doc["servers"] = tomlkit.table()
+            ml_string = String(StringType.MLB, new_list_str, new_list_str, Trivia())
+            doc["servers"]["list"] = ml_string
+
+            lines.append(f"✅ 成功导入 {len(result.servers)} 个服务器:")
+            for srv in result.servers[:5]:
+                lines.append(f"  • {srv.get('name')} ({srv.get('transport', 'stdio')})")
+            if len(result.servers) > 5:
+                lines.append(f"  ... 还有 {len(result.servers) - 5} 个")
+
+            if result.skipped:
+                lines.append(f"跳过: {len(result.skipped)} 个已存在")
+
+            lines.append("")
+            lines.append("💡 发送 /mcp reconnect 使新服务器生效")
+
+            logger.info(f"WebUI 导入成功: {len(result.servers)} 个服务器")
+
+        # 更新导入结果并清空导入框
+        if "import_export" not in doc:
+            doc["import_export"] = tomlkit.table()
+
+        doc["import_export"]["import_config"] = ""
+        result_text = "\n".join(lines)
+        if "\n" in result_text:
+            ml_result = String(StringType.MLB, result_text, result_text, Trivia())
+            doc["import_export"]["import_result"] = ml_result
+        else:
+            doc["import_export"]["import_result"] = result_text
+
+        # 保存配置文件
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                tomlkit.dump(doc, f)
+            logger.info("WebUI 导入结果已保存")
+        except Exception as e:
+            logger.error(f"保存导入结果失败: {e}")
 
     def _process_quick_add_server(self) -> None:
         """v1.5.1: 处理快速添加服务器表单，将新服务器合并到列表"""

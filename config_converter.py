@@ -35,8 +35,12 @@ class ConfigConverter:
         "http": "http",
         "streamable-http": "streamable_http",
         "streamable_http": "streamable_http",
+        "streamable-http": "streamable_http",
         "stdio": "stdio",
     }
+
+    # 支持的 transport 字段名（有些格式用 type 而不是 transport）
+    TRANSPORT_FIELD_NAMES = ["transport", "type"]
 
     # transport 类型映射 (内部格式 -> Claude 格式)
     TRANSPORT_MAP_OUT = {
@@ -159,11 +163,14 @@ class ConfigConverter:
             if not isinstance(headers, dict):
                 return False, f"服务器 '{name}' 的 headers 必须是对象", []
 
-        # 验证 transport 格式
-        if "transport" in config:
-            transport = config.get("transport", "").lower()
-            if transport and transport not in cls.TRANSPORT_MAP_IN:
-                warnings.append(f"'{name}': 未知的 transport 类型 '{transport}'，将自动推断")
+        # 验证 transport/type 格式
+        transport_value = None
+        for field_name in cls.TRANSPORT_FIELD_NAMES:
+            if field_name in config:
+                transport_value = config.get(field_name, "").lower()
+                break
+        if transport_value and transport_value not in cls.TRANSPORT_MAP_IN:
+            warnings.append(f"'{name}': 未知的 transport 类型 '{transport_value}'，将自动推断")
 
         return True, None, warnings
 
@@ -203,7 +210,14 @@ class ConfigConverter:
 
         else:
             # 远程模式 (sse/http/streamable_http)
-            transport_raw = config.get("transport", "sse").lower()
+            # 支持 transport 或 type 字段
+            transport_raw = None
+            for field_name in cls.TRANSPORT_FIELD_NAMES:
+                if field_name in config:
+                    transport_raw = config.get(field_name, "").lower()
+                    break
+            if not transport_raw:
+                transport_raw = "sse"
             result["transport"] = cls.TRANSPORT_MAP_IN.get(transport_raw, "sse")
             result["url"] = config.get("url", "")
 
