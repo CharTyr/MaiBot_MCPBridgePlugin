@@ -1,6 +1,11 @@
 """
-MCP 桥接插件 v1.5.3
+MCP 桥接插件 v1.5.4
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.5.4 易用性优化:
+- 新增 MCP 服务器获取快捷入口（魔搭、Smithery、Glama 等）
+- 优化快速入门指南，提供配置示例
+- 帮助新用户快速上手 MCP
 
 v1.5.3 配置优化:
 - 新增智能心跳 WebUI 配置项：启用开关、最大间隔倍数
@@ -1394,13 +1399,38 @@ class MCPBridgePlugin(BasePlugin):
         "guide": {
             "quick_start": ConfigField(
                 type=str,
-                default="见 README.md",  # 简化默认值，避免多行问题
-                description="新手快速入门指南",
-                label="📖 快速入门指南",
-                input_type="textarea",
+                default="1. 从下方链接获取 MCP 服务器地址  2. 在「快速添加」填写信息  3. 保存后重启或发送 /mcp reconnect",
+                description="三步开始使用",
+                label="🚀 快速入门",
                 disabled=True,
-                rows=18,
                 order=1,
+            ),
+            "mcp_sources": ConfigField(
+                type=str,
+                default="mcp.modelscope.cn | smithery.ai | glama.ai | mcp.higress.ai | mcp.so | pulsemcp.com",
+                description="点击访问获取免费 MCP 服务器",
+                label="🌐 MCP 服务器获取",
+                disabled=True,
+                hint="推荐: mcp.modelscope.cn (魔搭，国内免费) | smithery.ai (国际) | glama.ai (目录)",
+                order=2,
+            ),
+            "mcp_links": ConfigField(
+                type=str,
+                default="https://mcp.modelscope.cn | https://smithery.ai | https://glama.ai | https://mcp.higress.ai | https://mcp.so | https://pulsemcp.com",
+                description="复制链接到浏览器打开",
+                label="🔗 快捷链接",
+                disabled=True,
+                hint="魔搭 ModelScope 提供免费 MCP 服务器，复制 URL 到「快速添加」即可使用",
+                order=3,
+            ),
+            "example_config": ConfigField(
+                type=str,
+                default='{"name": "time", "enabled": true, "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}',
+                description="复制此示例到服务器列表，或使用「快速添加」",
+                label="📝 配置示例",
+                disabled=True,
+                hint="这是一个免费的时间服务器示例，可直接使用",
+                order=4,
             ),
         },
         "plugin": {
