@@ -1,6 +1,12 @@
 """
-MCP 桥接插件 v1.8.1
+MCP 桥接插件 v1.9.0
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.9.0 双轨制架构:
+- 软流程 (ReAct): LLM 自主决策，动态多轮调用 MCP 工具，灵活应对复杂场景
+- 硬流程 (Workflow): 用户预定义的工作流，固定执行顺序，可靠可控
+- 工具链重命名为 Workflow，更清晰地表达其"预定义流程"的本质
+- 命令更新：/mcp workflow 替代 /mcp chain
 
 v1.8.1 工具链易用性优化:
 - 快速添加工具链：WebUI 表单式配置，无需手写 JSON
@@ -1646,7 +1652,17 @@ class MCPStatusCommand(BaseCommand):
             if _plugin_instance:
                 _plugin_instance._load_tool_chains()
                 chains = tool_chain_manager.get_all_chains()
-                await self.send_text(f"✅ 已重新加载工具链配置，共 {len(chains)} 个")
+                registered = len(tool_chain_registry._tool_classes)
+                lines = [f"✅ 已重新加载工具链配置"]
+                lines.append(f"📋 配置数: {len(chains)} 个")
+                lines.append(f"🔧 已注册: {registered} 个（可被 LLM 调用）")
+                if chains:
+                    lines.append("")
+                    lines.append("工具链列表:")
+                    for name, chain in chains.items():
+                        status = "✅" if chain.enabled else "❌"
+                        lines.append(f"  {status} chain_{name}")
+                await self.send_text("\n".join(lines))
             else:
                 await self.send_text("❌ 插件未初始化")
             return (True, None, True)
@@ -2033,7 +2049,8 @@ class MCPBridgePlugin(BasePlugin):
         "status": "📊 运行状态",
         "settings": "⚙️ 高级设置",
         "tools": "🔧 工具管理",
-        "tool_chains": "🔗 工具链",
+        "tool_chains": "🔗 Workflow (硬流程)",
+        "react": "🔄 ReAct (软流程)",
         "permissions": "🔐 权限控制",
     }
     
@@ -2548,6 +2565,82 @@ class MCPBridgePlugin(BasePlugin):
                 disabled=True,
                 rows=8,
                 order=40,
+            ),
+        },
+        # v1.9.0 ReAct 软流程配置
+        "react": {
+            "react_enabled": ConfigField(
+                type=bool,
+                default=False,
+                description="🔄 将 MCP 工具注册到记忆检索 ReAct 系统",
+                label="🔄 启用 ReAct 集成",
+                hint="启用后，MaiBot 的 ReAct Agent 可在记忆检索时调用 MCP 工具",
+                order=1,
+            ),
+            "react_guide": ConfigField(
+                type=str,
+                default="""ReAct 软流程说明:
+
+📌 什么是 ReAct?
+ReAct (Reasoning + Acting) 是 LLM 自主决策的多轮工具调用模式。
+与 Workflow 硬流程不同，ReAct 由 LLM 动态决定调用哪些工具。
+
+📌 工作原理:
+1. 用户提问 → LLM 分析需要什么信息
+2. LLM 选择调用工具 → 获取结果
+3. LLM 观察结果 → 决定是否需要更多信息
+4. 重复 2-3 直到信息足够 → 生成最终回答
+
+📌 与 Workflow 的区别:
+- ReAct (软流程): LLM 自主决策，灵活但不可预测
+- Workflow (硬流程): 用户预定义，固定流程，可靠可控
+
+📌 使用场景:
+- 复杂问题需要多步推理
+- 不确定需要调用哪些工具
+- 需要根据中间结果动态调整""",
+                description="ReAct 软流程使用说明",
+                label="📖 使用指南",
+                input_type="textarea",
+                disabled=True,
+                rows=15,
+                order=2,
+            ),
+            "filter_mode": ConfigField(
+                type=str,
+                default="whitelist",
+                description="过滤模式",
+                label="📋 过滤模式",
+                choices=["whitelist", "blacklist"],
+                hint="whitelist: 只注册列出的工具；blacklist: 排除列出的工具",
+                order=3,
+            ),
+            "tool_filter": ConfigField(
+                type=str,
+                default="",
+                description="工具过滤列表（每行一个，支持通配符 * 和精确匹配）",
+                label="🔍 工具过滤列表",
+                input_type="textarea",
+                rows=6,
+                placeholder="""# 精确匹配示例:
+mcp_bing_web_search_bing_search
+mcp_mcmod_search_mod
+
+# 通配符示例:
+mcp_*_search_*
+mcp_bing_*""",
+                hint="白名单模式: 只注册列出的工具；黑名单模式: 排除列出的工具。支持 # 注释",
+                order=4,
+            ),
+            "react_status": ConfigField(
+                type=str,
+                default="(启动后自动生成)",
+                description="当前已注册到 ReAct 的工具状态（只读）",
+                label="📊 ReAct 工具状态",
+                input_type="textarea",
+                disabled=True,
+                rows=6,
+                order=10,
             ),
         },
         # v1.4.0 权限控制
@@ -3434,7 +3527,189 @@ class MCPBridgePlugin(BasePlugin):
         
         if loaded > 0:
             logger.info(f"已加载 {loaded} 个工具链")
+            # 注册工具链到组件系统
+            self._register_tool_chains()
             self._update_chains_status_display()
+    
+    def _register_tool_chains(self) -> None:
+        """v1.8.1: 将工具链注册到 MaiBot 组件系统，使 LLM 可调用"""
+        from src.plugin_system.core.component_registry import component_registry
+        
+        chain_count = 0
+        for chain_name, chain in tool_chain_manager.get_enabled_chains().items():
+            try:
+                info, tool_class = tool_chain_registry.register_chain(chain)
+                info.plugin_name = self.plugin_name
+                
+                if component_registry.register_component(info, tool_class):
+                    chain_count += 1
+                    logger.info(f"🔗 注册工具链: {tool_class.name}")
+                else:
+                    logger.warning(f"❌ 注册工具链失败: {tool_class.name}")
+            except Exception as e:
+                logger.error(f"注册工具链 {chain_name} 失败: {e}")
+        
+        if chain_count > 0:
+            logger.info(f"已注册 {chain_count} 个工具链到组件系统")
+    
+    def _register_tools_to_react(self) -> int:
+        """v1.9.0: 将 MCP 工具注册到记忆检索 ReAct 系统（软流程）
+        
+        这样 MaiBot 的 ReAct Agent 在检索记忆时可以调用 MCP 工具，
+        实现 LLM 自主决策的多轮工具调用。
+        
+        Returns:
+            int: 成功注册的工具数量
+        """
+        try:
+            from src.memory_system.retrieval_tools import register_memory_retrieval_tool
+        except ImportError:
+            logger.warning("无法导入记忆检索工具注册模块，跳过 ReAct 工具注册")
+            return 0
+        
+        react_config = self.config.get("react", {})
+        filter_mode = react_config.get("filter_mode", "whitelist")
+        tool_filter = react_config.get("tool_filter", "").strip()
+        
+        # 解析过滤列表（支持 # 注释）
+        filter_patterns = []
+        for line in tool_filter.split("\n"):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                filter_patterns.append(line)
+        
+        registered_count = 0
+        disabled_tools = self._get_disabled_tools()
+        registered_tools = []  # 记录已注册的工具名
+        
+        for tool_key, (tool_info, _) in mcp_manager.all_tools.items():
+            tool_name = tool_key.replace("-", "_").replace(".", "_")
+            
+            # 跳过禁用的工具
+            if tool_name in disabled_tools:
+                continue
+            
+            # 应用过滤器
+            if filter_patterns:
+                matched = any(
+                    fnmatch.fnmatch(tool_name, p) or tool_name == p
+                    for p in filter_patterns
+                )
+                
+                if filter_mode == "whitelist":
+                    # 白名单模式：只注册匹配的
+                    if not matched:
+                        continue
+                else:
+                    # 黑名单模式：排除匹配的
+                    if matched:
+                        continue
+            
+            try:
+                # 转换参数格式
+                parameters = self._convert_mcp_params_to_react_format(tool_info.input_schema)
+                
+                # 创建异步执行函数（使用闭包捕获 tool_key）
+                def make_execute_func(tk: str):
+                    async def execute_func(**kwargs) -> str:
+                        result = await mcp_manager.call_tool(tk, kwargs)
+                        if result.success:
+                            return result.content or "(无返回内容)"
+                        else:
+                            return f"工具调用失败: {result.error}"
+                    return execute_func
+                
+                execute_func = make_execute_func(tool_key)
+                
+                # 注册到 ReAct 系统
+                register_memory_retrieval_tool(
+                    name=f"mcp_{tool_name}",
+                    description=f"{tool_info.description} [MCP: {tool_info.server_name}]",
+                    parameters=parameters,
+                    execute_func=execute_func,
+                )
+                
+                registered_count += 1
+                registered_tools.append(f"mcp_{tool_name}")
+                logger.debug(f"🔄 注册 ReAct 工具: mcp_{tool_name}")
+                
+            except Exception as e:
+                logger.warning(f"注册 ReAct 工具 {tool_name} 失败: {e}")
+        
+        if registered_count > 0:
+            mode_str = "白名单" if filter_mode == "whitelist" else "黑名单"
+            logger.info(f"已注册 {registered_count} 个 MCP 工具到 ReAct 系统 (过滤模式: {mode_str})")
+        
+        # 更新状态显示
+        self._update_react_status_display(registered_tools, filter_mode, filter_patterns)
+        
+        return registered_count
+    
+    def _update_react_status_display(self, registered_tools: List[str], filter_mode: str, filter_patterns: List[str]) -> None:
+        """更新 ReAct 工具状态显示"""
+        import tomlkit
+        from tomlkit.items import String, StringType, Trivia
+        
+        if not registered_tools:
+            status_text = "(未注册任何工具)"
+        else:
+            mode_str = "白名单" if filter_mode == "whitelist" else "黑名单"
+            lines = [f"📊 已注册 {len(registered_tools)} 个工具 (模式: {mode_str})"]
+            if filter_patterns:
+                lines.append(f"过滤规则: {len(filter_patterns)} 条")
+            lines.append("")
+            for tool in registered_tools[:20]:
+                lines.append(f"  • {tool}")
+            if len(registered_tools) > 20:
+                lines.append(f"  ... 还有 {len(registered_tools) - 20} 个")
+            status_text = "\n".join(lines)
+        
+        # 更新内存配置
+        if "react" not in self.config:
+            self.config["react"] = {}
+        self.config["react"]["react_status"] = status_text
+        
+        # 写入配置文件
+        try:
+            config_path = Path(__file__).parent / "config.toml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    doc = tomlkit.load(f)
+                
+                if "react" not in doc:
+                    doc["react"] = tomlkit.table()
+                
+                ml_string = String(StringType.MLB, status_text, status_text, Trivia())
+                doc["react"]["react_status"] = ml_string
+                
+                with open(config_path, "w", encoding="utf-8") as f:
+                    tomlkit.dump(doc, f)
+        except Exception as e:
+            logger.warning(f"更新 ReAct 状态显示失败: {e}")
+    
+    def _convert_mcp_params_to_react_format(self, input_schema: Dict) -> List[Dict[str, Any]]:
+        """将 MCP 工具参数转换为 ReAct 工具参数格式"""
+        parameters = []
+        
+        if not input_schema:
+            return parameters
+        
+        properties = input_schema.get("properties", {})
+        required = input_schema.get("required", [])
+        
+        for param_name, param_info in properties.items():
+            param_type = param_info.get("type", "string")
+            description = param_info.get("description", f"参数 {param_name}")
+            is_required = param_name in required
+            
+            parameters.append({
+                "name": param_name,
+                "type": param_type,
+                "description": description,
+                "required": is_required,
+            })
+        
+        return parameters
     
     def _update_chains_status_display(self) -> None:
         """v1.8.0: 更新工具链状态显示"""
@@ -3623,25 +3898,21 @@ class MCPBridgePlugin(BasePlugin):
             else:
                 logger.warning(f"❌ 注册 MCP 工具失败: {tool_class.name}")
         
-        # v1.8.0: 注册工具链为组合工具
-        chain_count = 0
+        # v1.8.0: 注册工具链为组合工具（使用统一方法）
         chains_config = self.config.get("tool_chains", {})
         if chains_config.get("chains_enabled", True):
-            for chain_name, chain in tool_chain_manager.get_enabled_chains().items():
-                try:
-                    info, tool_class = tool_chain_registry.register_chain(chain)
-                    info.plugin_name = self.plugin_name
-                    
-                    if component_registry.register_component(info, tool_class):
-                        chain_count += 1
-                        logger.info(f"🔗 注册工具链: {tool_class.name}")
-                    else:
-                        logger.warning(f"❌ 注册工具链失败: {tool_class.name}")
-                except Exception as e:
-                    logger.error(f"注册工具链 {chain_name} 失败: {e}")
+            self._register_tool_chains()
+        
+        chain_count = len(tool_chain_registry._tool_classes)
+        
+        # v1.9.0: 注册 MCP 工具到记忆检索 ReAct 系统（软流程）
+        react_count = 0
+        react_config = self.config.get("react", {})
+        if react_config.get("react_enabled", False):
+            react_count = self._register_tools_to_react()
         
         self._initialized = True
-        logger.info(f"MCP 桥接插件初始化完成，已注册 {registered_count} 个工具，{chain_count} 个工具链")
+        logger.info(f"MCP 桥接插件初始化完成，已注册 {registered_count} 个工具，{chain_count} 个工具链，{react_count} 个 ReAct 工具")
         
         # 更新状态显示
         self._update_status_display()
