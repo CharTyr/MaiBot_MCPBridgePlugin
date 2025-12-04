@@ -1,6 +1,18 @@
 """
-MCP 桥接插件 v1.7.0
+MCP 桥接插件 v1.8.1
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v1.8.1 工具链易用性优化:
+- 快速添加工具链：WebUI 表单式配置，无需手写 JSON
+- 工具链模板：提供常用工具链配置模板参考
+- 使用指南：内置变量语法和命令说明
+- 状态显示优化：详细展示工具链步骤和参数信息
+
+v1.8.0 工具链支持:
+- 工具链：将多个工具按顺序执行，后续工具可使用前序工具的输出
+- 自定义工具链：在 WebUI 配置工具链，自动注册为组合工具供 LLM 调用
+- 变量替换：支持 ${input.参数}、${step.输出键}、${prev} 变量
+- 工具链命令：/mcp chain 查看、测试、管理工具链
 
 v1.7.0 稳定性与易用性优化:
 - 断路器模式：故障服务器快速失败，避免拖慢整体响应
@@ -85,6 +97,12 @@ from .mcp_client import (
     mcp_manager,
 )
 from .config_converter import ConfigConverter, ConversionResult
+from .tool_chain import (
+    ToolChainDefinition,
+    ToolChainStep,
+    ChainExecutionResult,
+    tool_chain_manager,
+)
 
 logger = get_logger("mcp_bridge_plugin")
 
@@ -946,13 +964,133 @@ class MCPGetPromptTool(BaseTool):
         return await self.execute(function_args)
 
 
+# ============================================================================
+# v1.8.0: 工具链代理工具
+# ============================================================================
+
+class ToolChainProxyBase(BaseTool):
+    """工具链代理基类"""
+    
+    name: str = ""
+    description: str = ""
+    parameters: List[Tuple[str, ToolParamType, str, bool, Optional[List[str]]]] = []
+    available_for_llm: bool = True
+    
+    _chain_name: str = ""
+    
+    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+        """执行工具链"""
+        # 移除内部标记
+        args = {k: v for k, v in function_args.items() if k != "llm_called"}
+        
+        logger.debug(f"执行工具链 {self._chain_name}，参数: {args}")
+        
+        result = await tool_chain_manager.execute_chain(self._chain_name, args)
+        
+        if result.success:
+            # 构建输出
+            output_parts = []
+            output_parts.append(result.final_output)
+            
+            # 可选：添加执行摘要
+            # output_parts.append(f"\n\n---\n执行摘要:\n{result.to_summary()}")
+            
+            return {"name": self.name, "content": "\n".join(output_parts)}
+        else:
+            error_msg = f"⚠️ 工具链执行失败: {result.error}"
+            if result.step_results:
+                error_msg += f"\n\n执行详情:\n{result.to_summary()}"
+            return {"name": self.name, "content": error_msg}
+    
+    async def direct_execute(self, **function_args) -> Dict[str, Any]:
+        return await self.execute(function_args)
+
+
+def create_chain_tool_class(chain: ToolChainDefinition) -> Type[ToolChainProxyBase]:
+    """根据工具链定义动态创建工具类"""
+    # 构建参数列表
+    parameters = []
+    for param_name, param_desc in chain.input_params.items():
+        parameters.append((param_name, ToolParamType.STRING, param_desc, True, None))
+    
+    # 生成类名和工具名
+    class_name = f"ToolChain_{chain.name}".replace("-", "_").replace(".", "_")
+    tool_name = f"chain_{chain.name}".replace("-", "_").replace(".", "_")
+    
+    # 构建描述
+    description = chain.description
+    if chain.steps:
+        step_names = [s.tool_name.split("_")[-1] for s in chain.steps[:3]]
+        description += f" (执行流程: {' → '.join(step_names)}{'...' if len(chain.steps) > 3 else ''})"
+    
+    tool_class = type(
+        class_name,
+        (ToolChainProxyBase,),
+        {
+            "name": tool_name,
+            "description": description,
+            "parameters": parameters,
+            "available_for_llm": True,
+            "_chain_name": chain.name,
+        }
+    )
+    
+    return tool_class
+
+
+class ToolChainRegistry:
+    """工具链注册表"""
+    
+    def __init__(self):
+        self._tool_classes: Dict[str, Type[ToolChainProxyBase]] = {}
+        self._tool_infos: Dict[str, ToolInfo] = {}
+    
+    def register_chain(self, chain: ToolChainDefinition) -> Tuple[ToolInfo, Type[ToolChainProxyBase]]:
+        """注册工具链为组合工具"""
+        tool_class = create_chain_tool_class(chain)
+        
+        self._tool_classes[chain.name] = tool_class
+        
+        info = ToolInfo(
+            name=tool_class.name,
+            tool_description=tool_class.description,
+            enabled=True,
+            tool_parameters=tool_class.parameters,
+            component_type=ComponentType.TOOL,
+        )
+        self._tool_infos[chain.name] = info
+        
+        return info, tool_class
+    
+    def unregister_chain(self, chain_name: str) -> bool:
+        """注销工具链"""
+        if chain_name in self._tool_classes:
+            del self._tool_classes[chain_name]
+            del self._tool_infos[chain_name]
+            return True
+        return False
+    
+    def get_all_components(self) -> List[Tuple[ComponentInfo, Type]]:
+        """获取所有工具链组件"""
+        return [(self._tool_infos[key], self._tool_classes[key]) for key in self._tool_classes.keys()]
+    
+    def clear(self) -> None:
+        """清空所有注册"""
+        self._tool_classes.clear()
+        self._tool_infos.clear()
+
+
+# 全局工具链注册表
+tool_chain_registry = ToolChainRegistry()
+
+
 class MCPStatusTool(BaseTool):
     """MCP 状态查询工具"""
     
     name = "mcp_status"
-    description = "查询 MCP 桥接插件的状态，包括服务器连接状态、可用工具列表、资源列表、提示模板列表、调用统计、追踪记录等信息"
+    description = "查询 MCP 桥接插件的状态，包括服务器连接状态、可用工具列表、工具链列表、资源列表、提示模板列表、调用统计、追踪记录等信息"
     parameters = [
-        ("query_type", ToolParamType.STRING, "查询类型", False, ["status", "tools", "resources", "prompts", "stats", "trace", "cache", "all"]),
+        ("query_type", ToolParamType.STRING, "查询类型", False, ["status", "tools", "chains", "resources", "prompts", "stats", "trace", "cache", "all"]),
         ("server_name", ToolParamType.STRING, "指定服务器名称（可选）", False, None),
     ]
     available_for_llm = True
@@ -968,6 +1106,9 @@ class MCPStatusTool(BaseTool):
         
         if query_type in ("tools", "all"):
             result_parts.append(self._format_tools(server_name))
+        
+        if query_type in ("chains", "all"):
+            result_parts.append(self._format_chains())
         
         if query_type in ("resources", "all"):
             result_parts.append(self._format_resources(server_name))
@@ -1118,6 +1259,28 @@ class MCPStatusTool(BaseTool):
         lines.append(f"  命中率: {stats['hit_rate']}")
         return "\n".join(lines)
     
+    def _format_chains(self) -> str:
+        """v1.8.0: 格式化工具链列表"""
+        chains = tool_chain_manager.get_all_chains()
+        if not chains:
+            return "🔗 当前没有配置工具链"
+        
+        lines = ["🔗 工具链列表"]
+        for name, chain in chains.items():
+            status = "✅" if chain.enabled else "❌"
+            lines.append(f"\n{status} {name}")
+            lines.append(f"   描述: {chain.description[:50]}...")
+            lines.append(f"   步骤: {len(chain.steps)} 个")
+            for i, step in enumerate(chain.steps[:3]):
+                lines.append(f"     {i+1}. {step.tool_name}")
+            if len(chain.steps) > 3:
+                lines.append(f"     ... 还有 {len(chain.steps) - 3} 个步骤")
+            if chain.input_params:
+                params = ", ".join(chain.input_params.keys())
+                lines.append(f"   参数: {params}")
+        
+        return "\n".join(lines)
+    
     async def direct_execute(self, **function_args) -> Dict[str, Any]:
         return await self.execute(function_args)
 
@@ -1131,7 +1294,7 @@ class MCPStatusCommand(BaseCommand):
 
     command_name = "mcp_status_command"
     command_description = "查看 MCP 服务器连接状态和统计信息"
-    command_pattern = r"^[/／]mcp(?:\s+(?P<subcommand>status|tools|stats|reconnect|trace|cache|perm|export|search))?(?:\s+(?P<arg>.+))?$"
+    command_pattern = r"^[/／]mcp(?:\s+(?P<subcommand>status|tools|stats|reconnect|trace|cache|perm|export|search|chain))?(?:\s+(?P<arg>.+))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], bool]:
         """执行命令"""
@@ -1160,6 +1323,10 @@ class MCPStatusCommand(BaseCommand):
         # v1.7.0: 工具搜索命令
         if subcommand == "search":
             return await self._handle_search(arg)
+        
+        # v1.8.0: 工具链命令
+        if subcommand == "chain":
+            return await self._handle_chain(arg)
 
         result = self._format_output(subcommand, arg)
         await self.send_text(result)
@@ -1421,6 +1588,156 @@ class MCPStatusCommand(BaseCommand):
         await self.send_text("\n".join(lines))
         return (True, None, True)
 
+    async def _handle_chain(self, arg: Optional[str] = None) -> Tuple[bool, Optional[str], bool]:
+        """v1.8.0: 处理工具链命令"""
+        if not arg or not arg.strip():
+            # 显示工具链列表和帮助
+            chains = tool_chain_manager.get_all_chains()
+            
+            lines = ["🔗 工具链管理"]
+            lines.append("")
+            
+            if chains:
+                lines.append(f"已配置 {len(chains)} 个工具链:")
+                for name, chain in chains.items():
+                    status = "✅" if chain.enabled else "❌"
+                    steps_count = len(chain.steps)
+                    lines.append(f"  {status} {name} ({steps_count} 步)")
+            else:
+                lines.append("当前没有配置工具链")
+            
+            lines.append("")
+            lines.append("命令:")
+            lines.append("  /mcp chain list       查看所有工具链")
+            lines.append("  /mcp chain <名称>     查看工具链详情")
+            lines.append("  /mcp chain test <名称> <参数JSON>  测试执行")
+            lines.append("  /mcp chain reload     重新加载配置")
+            lines.append("")
+            lines.append("💡 在 WebUI「工具链」配置区编辑工具链")
+            
+            await self.send_text("\n".join(lines))
+            return (True, None, True)
+        
+        parts = arg.strip().split(maxsplit=2)
+        sub_action = parts[0].lower()
+        
+        if sub_action == "list":
+            # 列出所有工具链
+            chains = tool_chain_manager.get_all_chains()
+            if not chains:
+                await self.send_text("🔗 当前没有配置工具链")
+                return (True, None, True)
+            
+            lines = [f"🔗 工具链列表 ({len(chains)} 个)"]
+            for name, chain in chains.items():
+                status = "✅" if chain.enabled else "❌"
+                lines.append(f"\n{status} {name}")
+                lines.append(f"   {chain.description[:60]}...")
+                lines.append(f"   步骤: {' → '.join([s.tool_name.split('_')[-1] for s in chain.steps[:4]])}")
+                if chain.input_params:
+                    lines.append(f"   参数: {', '.join(chain.input_params.keys())}")
+            
+            await self.send_text("\n".join(lines))
+            return (True, None, True)
+        
+        elif sub_action == "reload":
+            # 重新加载工具链配置
+            global _plugin_instance
+            if _plugin_instance:
+                _plugin_instance._load_tool_chains()
+                chains = tool_chain_manager.get_all_chains()
+                await self.send_text(f"✅ 已重新加载工具链配置，共 {len(chains)} 个")
+            else:
+                await self.send_text("❌ 插件未初始化")
+            return (True, None, True)
+        
+        elif sub_action == "test" and len(parts) >= 2:
+            # 测试执行工具链
+            chain_name = parts[1]
+            args_json = parts[2] if len(parts) > 2 else "{}"
+            
+            chain = tool_chain_manager.get_chain(chain_name)
+            if not chain:
+                await self.send_text(f"❌ 工具链 '{chain_name}' 不存在")
+                return (True, None, True)
+            
+            try:
+                input_args = json.loads(args_json)
+            except json.JSONDecodeError:
+                await self.send_text("❌ 参数 JSON 格式错误")
+                return (True, None, True)
+            
+            await self.send_text(f"🔄 正在执行工具链 {chain_name}...")
+            
+            result = await tool_chain_manager.execute_chain(chain_name, input_args)
+            
+            lines = []
+            if result.success:
+                lines.append(f"✅ 工具链执行成功 ({result.total_duration_ms:.0f}ms)")
+                lines.append("")
+                lines.append("执行详情:")
+                lines.append(result.to_summary())
+                lines.append("")
+                lines.append("最终输出:")
+                output_preview = result.final_output[:500]
+                if len(result.final_output) > 500:
+                    output_preview += "..."
+                lines.append(output_preview)
+            else:
+                lines.append(f"❌ 工具链执行失败")
+                lines.append(f"错误: {result.error}")
+                if result.step_results:
+                    lines.append("")
+                    lines.append("执行详情:")
+                    lines.append(result.to_summary())
+            
+            await self.send_text("\n".join(lines))
+            return (True, None, True)
+        
+        else:
+            # 查看特定工具链详情
+            chain_name = sub_action
+            chain = tool_chain_manager.get_chain(chain_name)
+            
+            if not chain:
+                # 尝试模糊匹配
+                all_chains = tool_chain_manager.get_all_chains()
+                similar = [n for n in all_chains.keys() if chain_name.lower() in n.lower()]
+                msg = f"❌ 工具链 '{chain_name}' 不存在"
+                if similar:
+                    msg += f"\n💡 你是不是想找: {', '.join(similar[:3])}"
+                await self.send_text(msg)
+                return (True, None, True)
+            
+            lines = [f"🔗 工具链: {chain.name}"]
+            lines.append(f"状态: {'✅ 启用' if chain.enabled else '❌ 禁用'}")
+            lines.append(f"描述: {chain.description}")
+            lines.append("")
+            
+            if chain.input_params:
+                lines.append("📥 输入参数:")
+                for param, desc in chain.input_params.items():
+                    lines.append(f"  • {param}: {desc}")
+                lines.append("")
+            
+            lines.append(f"📋 执行步骤 ({len(chain.steps)} 个):")
+            for i, step in enumerate(chain.steps):
+                optional_tag = " (可选)" if step.optional else ""
+                lines.append(f"  {i+1}. {step.tool_name}{optional_tag}")
+                if step.description:
+                    lines.append(f"     {step.description}")
+                if step.output_key:
+                    lines.append(f"     输出键: {step.output_key}")
+                if step.args_template:
+                    args_preview = json.dumps(step.args_template, ensure_ascii=False)[:60]
+                    lines.append(f"     参数: {args_preview}...")
+            
+            lines.append("")
+            lines.append(f"💡 测试: /mcp chain test {chain.name} " + '{"参数": "值"}')
+            
+            await self.send_text("\n".join(lines))
+            return (True, None, True)
+
     def _format_output(self, subcommand: str, server_name: str = None) -> str:
         """格式化输出"""
         status = mcp_manager.get_status()
@@ -1507,6 +1824,11 @@ class MCPStatusCommand(BaseCommand):
             lines.append("配置导入导出:")
             lines.append("  /mcp import <json>    导入配置")
             lines.append("  /mcp export [格式]    导出配置")
+            lines.append("")
+            lines.append("工具链:")
+            lines.append("  /mcp chain            查看工具链列表")
+            lines.append("  /mcp chain <名称>     查看工具链详情")
+            lines.append("  /mcp chain test <名称> <参数>  测试执行")
             lines.append("")
             lines.append("其他:")
             lines.append("  /mcp trace   查看调用追踪")
@@ -1694,7 +2016,7 @@ class MCPStopHandler(BaseEventHandler):
 
 @register_plugin
 class MCPBridgePlugin(BasePlugin):
-    """MCP 桥接插件 v1.4.0 - 将 MCP 服务器的工具桥接到 MaiBot"""
+    """MCP 桥接插件 v1.8.0 - 将 MCP 服务器的工具桥接到 MaiBot"""
     
     plugin_name: str = "mcp_bridge_plugin"
     enable_plugin: bool = False  # 默认禁用，用户需在 WebUI 手动启用
@@ -1711,6 +2033,7 @@ class MCPBridgePlugin(BasePlugin):
         "status": "📊 运行状态",
         "settings": "⚙️ 高级设置",
         "tools": "🔧 工具管理",
+        "tool_chains": "🔗 工具链",
         "permissions": "🔐 权限控制",
     }
     
@@ -2055,7 +2378,7 @@ class MCPBridgePlugin(BasePlugin):
                 input_type="textarea",
                 disabled=True,
                 rows=12,
-                hint="从此处复制工具名到下方禁用列表",
+                hint="从此处复制工具名到下方禁用列表或工具链配置",
                 order=1,
             ),
             "disabled_tools": ConfigField(
@@ -2067,6 +2390,164 @@ class MCPBridgePlugin(BasePlugin):
                 rows=6,
                 hint="从上方工具清单复制工具名，每行一个。禁用后该工具不会被 LLM 调用",
                 order=2,
+            ),
+        },
+        # v1.8.0 工具链配置
+        "tool_chains": {
+            "chains_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="🔗 启用工具链功能",
+                label="🔗 启用工具链",
+                hint="工具链可将多个工具按顺序执行，后续工具可使用前序工具的输出",
+                order=1,
+            ),
+            # 工具链使用指南
+            "chains_guide": ConfigField(
+                type=str,
+                default="""工具链将多个 MCP 工具串联执行，后续步骤可使用前序步骤的输出
+
+📌 变量语法:
+  ${input.参数名}  - 用户输入的参数
+  ${step.输出键}   - 某步骤的输出（需设置 output_key）
+  ${prev}         - 上一步的输出
+  ${prev.字段}    - 上一步输出(JSON)的某字段
+
+📌 测试命令:
+  /mcp chain list          - 查看所有工具链
+  /mcp chain 链名 {"参数":"值"}  - 测试执行""",
+                description="工具链使用说明",
+                label="📖 使用指南",
+                input_type="textarea",
+                disabled=True,
+                rows=10,
+                order=2,
+            ),
+            # 快速添加工具链（表单式）
+            "quick_chain_name": ConfigField(
+                type=str,
+                default="",
+                description="工具链名称（英文，如 search_and_summarize）",
+                label="➕ 快速添加 - 名称",
+                placeholder="my_tool_chain",
+                hint="必填，将作为 LLM 可调用的工具名",
+                order=10,
+            ),
+            "quick_chain_desc": ConfigField(
+                type=str,
+                default="",
+                description="工具链描述（供 LLM 理解何时使用）",
+                label="➕ 快速添加 - 描述",
+                placeholder="先搜索内容，再获取详情并总结",
+                hint="必填，清晰描述工具链的用途",
+                order=11,
+            ),
+            "quick_chain_params": ConfigField(
+                type=str,
+                default="",
+                description="输入参数（每行一个，格式: 参数名=描述）",
+                label="➕ 快速添加 - 输入参数",
+                input_type="textarea",
+                rows=3,
+                placeholder="query=搜索关键词\nmax_results=最大结果数",
+                hint="定义用户需要提供的参数",
+                order=12,
+            ),
+            "quick_chain_steps": ConfigField(
+                type=str,
+                default="",
+                description="执行步骤（每行一个，格式: 工具名|参数JSON|输出键）",
+                label="➕ 快速添加 - 执行步骤",
+                input_type="textarea",
+                rows=5,
+                placeholder='mcp_server_search|{"keyword":"${input.query}"}|search_result\nmcp_server_detail|{"id":"${prev}"}|',
+                hint="格式: 工具名|参数模板|输出键（输出键可选）",
+                order=13,
+            ),
+            "quick_chain_add": ConfigField(
+                type=str,
+                default="",
+                description="填写上方信息后，在此输入 ADD 并保存即可添加",
+                label="➕ 确认添加",
+                placeholder="输入 ADD 并保存",
+                hint="添加后会自动合并到下方工具链列表",
+                order=14,
+            ),
+            # 工具链模板
+            "chains_templates": ConfigField(
+                type=str,
+                default="""📋 常用工具链模板（复制到下方列表使用）:
+
+1️⃣ 搜索+详情模板:
+{
+  "name": "search_and_detail",
+  "description": "搜索内容并获取详情",
+  "input_params": {"query": "搜索关键词"},
+  "steps": [
+    {"tool_name": "搜索工具名", "args_template": {"keyword": "${input.query}"}, "output_key": "results"},
+    {"tool_name": "详情工具名", "args_template": {"id": "${prev}"}}
+  ]
+}
+
+2️⃣ 获取+处理模板:
+{
+  "name": "fetch_and_process",
+  "description": "获取数据并处理",
+  "input_params": {"url": "目标URL"},
+  "steps": [
+    {"tool_name": "获取工具名", "args_template": {"url": "${input.url}"}, "output_key": "data"},
+    {"tool_name": "处理工具名", "args_template": {"content": "${step.data}"}}
+  ]
+}
+
+3️⃣ 多步骤可选模板:
+{
+  "name": "multi_step_chain",
+  "description": "多步骤处理，部分可选",
+  "input_params": {"input": "输入内容"},
+  "steps": [
+    {"tool_name": "步骤1工具", "args_template": {"data": "${input.input}"}, "output_key": "step1"},
+    {"tool_name": "步骤2工具", "args_template": {"data": "${prev}"}, "output_key": "step2", "optional": true},
+    {"tool_name": "步骤3工具", "args_template": {"data": "${step.step1}"}}
+  ]
+}""",
+                description="工具链配置模板参考",
+                label="📝 配置模板",
+                input_type="textarea",
+                disabled=True,
+                rows=15,
+                order=20,
+            ),
+            "chains_list": ConfigField(
+                type=str,
+                default="[]",
+                description="工具链配置（JSON 数组格式）",
+                label="📋 工具链列表",
+                input_type="textarea",
+                rows=20,
+                placeholder='''[
+  {
+    "name": "search_and_detail",
+    "description": "先搜索再获取详情",
+    "input_params": {"query": "搜索关键词"},
+    "steps": [
+      {"tool_name": "mcp_server_search", "args_template": {"keyword": "${input.query}"}, "output_key": "search_result"},
+      {"tool_name": "mcp_server_get_detail", "args_template": {"id": "${step.search_result}"}}
+    ]
+  }
+]''',
+                hint="每个工具链包含 name、description、input_params、steps",
+                order=30,
+            ),
+            "chains_status": ConfigField(
+                type=str,
+                default="(启动后自动生成)",
+                description="当前已注册的工具链状态（只读）",
+                label="📊 工具链状态",
+                input_type="textarea",
+                disabled=True,
+                rows=8,
+                order=40,
             ),
         },
         # v1.4.0 权限控制
@@ -2364,6 +2845,10 @@ class MCPBridgePlugin(BasePlugin):
         
         # v1.5.1: 处理快速添加服务器
         self._process_quick_add_server()
+        
+        # v1.8.0: 初始化工具链管理器
+        tool_chain_manager.set_executor(mcp_manager)
+        self._load_tool_chains()
 
     def _process_webui_import_export(self) -> None:
         """v1.6.0: 处理 WebUI 导入导出"""
@@ -2764,6 +3249,248 @@ class MCPBridgePlugin(BasePlugin):
         except Exception as e:
             logger.warning(f"保存服务器列表失败: {e}")
     
+    def _process_quick_add_chain(self) -> None:
+        """v1.8.0: 处理快速添加工具链表单"""
+        chains_config = self.config.get("tool_chains", {})
+        
+        # 检查是否触发添加
+        add_trigger = chains_config.get("quick_chain_add", "").strip().upper()
+        if add_trigger != "ADD":
+            return
+        
+        # 获取表单数据
+        chain_name = chains_config.get("quick_chain_name", "").strip()
+        chain_desc = chains_config.get("quick_chain_desc", "").strip()
+        params_str = chains_config.get("quick_chain_params", "").strip()
+        steps_str = chains_config.get("quick_chain_steps", "").strip()
+        
+        # 验证必填字段
+        if not chain_name:
+            logger.warning("快速添加工具链: 名称不能为空")
+            self._clear_quick_chain_fields()
+            return
+        
+        if not chain_desc:
+            logger.warning("快速添加工具链: 描述不能为空")
+            self._clear_quick_chain_fields()
+            return
+        
+        if not steps_str:
+            logger.warning("快速添加工具链: 步骤不能为空")
+            self._clear_quick_chain_fields()
+            return
+        
+        # 解析输入参数
+        input_params = {}
+        if params_str:
+            for line in params_str.split("\n"):
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                parts = line.split("=", 1)
+                param_name = parts[0].strip()
+                param_desc = parts[1].strip() if len(parts) > 1 else param_name
+                input_params[param_name] = param_desc
+        
+        # 解析步骤
+        steps = []
+        for line in steps_str.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            
+            parts = line.split("|")
+            if len(parts) < 2:
+                logger.warning(f"快速添加工具链: 步骤格式错误: {line}")
+                continue
+            
+            tool_name = parts[0].strip()
+            args_str = parts[1].strip() if len(parts) > 1 else "{}"
+            output_key = parts[2].strip() if len(parts) > 2 else ""
+            
+            # 解析参数 JSON
+            try:
+                args_template = json.loads(args_str) if args_str else {}
+            except json.JSONDecodeError:
+                logger.warning(f"快速添加工具链: 参数 JSON 格式错误: {args_str}")
+                args_template = {}
+            
+            steps.append({
+                "tool_name": tool_name,
+                "args_template": args_template,
+                "output_key": output_key,
+            })
+        
+        if not steps:
+            logger.warning("快速添加工具链: 没有有效的步骤")
+            self._clear_quick_chain_fields()
+            return
+        
+        # 构建新工具链
+        new_chain = {
+            "name": chain_name,
+            "description": chain_desc,
+            "input_params": input_params,
+            "steps": steps,
+            "enabled": True,
+        }
+        
+        # 获取现有工具链列表
+        chains_json = chains_config.get("chains_list", "[]")
+        try:
+            chains_list = json.loads(chains_json) if chains_json.strip() else []
+        except json.JSONDecodeError:
+            chains_list = []
+        
+        # 检查是否已存在同名工具链
+        for existing in chains_list:
+            if existing.get("name") == chain_name:
+                logger.info(f"快速添加: 工具链 {chain_name} 已存在，将更新")
+                chains_list.remove(existing)
+                break
+        
+        # 添加新工具链
+        chains_list.append(new_chain)
+        new_chains_json = json.dumps(chains_list, ensure_ascii=False, indent=2)
+        
+        # 更新配置
+        self.config["tool_chains"]["chains_list"] = new_chains_json
+        
+        # 清空表单字段
+        self._clear_quick_chain_fields()
+        
+        # 保存到配置文件
+        self._save_chains_list(new_chains_json)
+        
+        logger.info(f"快速添加: 已添加工具链 {chain_name} ({len(steps)} 个步骤)")
+    
+    def _clear_quick_chain_fields(self) -> None:
+        """清空快速添加工具链表单字段"""
+        if "tool_chains" not in self.config:
+            self.config["tool_chains"] = {}
+        self.config["tool_chains"]["quick_chain_name"] = ""
+        self.config["tool_chains"]["quick_chain_desc"] = ""
+        self.config["tool_chains"]["quick_chain_params"] = ""
+        self.config["tool_chains"]["quick_chain_steps"] = ""
+        self.config["tool_chains"]["quick_chain_add"] = ""
+    
+    def _save_chains_list(self, chains_json: str) -> None:
+        """保存工具链列表到配置文件"""
+        import tomlkit
+        from tomlkit.items import String, StringType, Trivia
+        
+        try:
+            config_path = Path(__file__).parent / "config.toml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    doc = tomlkit.load(f)
+                
+                if "tool_chains" not in doc:
+                    doc["tool_chains"] = tomlkit.table()
+                
+                # 保存工具链列表
+                ml_string = String(StringType.MLB, chains_json, chains_json, Trivia())
+                doc["tool_chains"]["chains_list"] = ml_string
+                
+                # 清空快速添加字段
+                doc["tool_chains"]["quick_chain_name"] = ""
+                doc["tool_chains"]["quick_chain_desc"] = ""
+                doc["tool_chains"]["quick_chain_params"] = ""
+                doc["tool_chains"]["quick_chain_steps"] = ""
+                doc["tool_chains"]["quick_chain_add"] = ""
+                
+                with open(config_path, "w", encoding="utf-8") as f:
+                    tomlkit.dump(doc, f)
+                    
+                logger.info("工具链列表已保存到配置文件")
+        except Exception as e:
+            logger.warning(f"保存工具链列表失败: {e}")
+    
+    def _load_tool_chains(self) -> None:
+        """v1.8.0: 加载工具链配置"""
+        # 先处理快速添加
+        self._process_quick_add_chain()
+        
+        chains_config = self.config.get("tool_chains", {})
+        
+        if not chains_config.get("chains_enabled", True):
+            logger.info("工具链功能已禁用")
+            return
+        
+        chains_json = chains_config.get("chains_list", "[]")
+        if not chains_json or not chains_json.strip():
+            return
+        
+        # 清空现有工具链
+        tool_chain_manager.clear()
+        tool_chain_registry.clear()
+        
+        # 加载新配置
+        loaded, errors = tool_chain_manager.load_from_json(chains_json)
+        
+        if errors:
+            for err in errors:
+                logger.warning(f"工具链配置错误: {err}")
+        
+        if loaded > 0:
+            logger.info(f"已加载 {loaded} 个工具链")
+            self._update_chains_status_display()
+    
+    def _update_chains_status_display(self) -> None:
+        """v1.8.0: 更新工具链状态显示"""
+        import tomlkit
+        from tomlkit.items import String, StringType, Trivia
+        
+        chains = tool_chain_manager.get_all_chains()
+        
+        if not chains:
+            status_text = "(无工具链配置)"
+        else:
+            lines = [f"📊 已配置 {len(chains)} 个工具链:\n"]
+            for name, chain in chains.items():
+                status = "✅" if chain.enabled else "❌"
+                # 显示工具链基本信息
+                lines.append(f"{status} chain_{name}")
+                lines.append(f"   描述: {chain.description[:40]}{'...' if len(chain.description) > 40 else ''}")
+                
+                # 显示输入参数
+                if chain.input_params:
+                    params = ", ".join(chain.input_params.keys())
+                    lines.append(f"   参数: {params}")
+                
+                # 显示步骤
+                lines.append(f"   步骤: {len(chain.steps)} 个")
+                for i, step in enumerate(chain.steps):
+                    opt = " (可选)" if step.optional else ""
+                    out = f" → {step.output_key}" if step.output_key else ""
+                    lines.append(f"      {i+1}. {step.tool_name}{out}{opt}")
+                lines.append("")
+            
+            status_text = "\n".join(lines)
+        
+        # 更新内存配置
+        if "tool_chains" not in self.config:
+            self.config["tool_chains"] = {}
+        self.config["tool_chains"]["chains_status"] = status_text
+        
+        # 写入配置文件
+        try:
+            config_path = Path(__file__).parent / "config.toml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    doc = tomlkit.load(f)
+                
+                if "tool_chains" not in doc:
+                    doc["tool_chains"] = tomlkit.table()
+                
+                ml_string = String(StringType.MLB, status_text, status_text, Trivia())
+                doc["tool_chains"]["chains_status"] = ml_string
+                
+                with open(config_path, "w", encoding="utf-8") as f:
+                    tomlkit.dump(doc, f)
+        except Exception as e:
+            logger.warning(f"更新工具链状态显示失败: {e}")
+    
     def _get_disabled_tools(self) -> set:
         """v1.4.0: 获取禁用的工具列表"""
         tools_config = self.config.get("tools", {})
@@ -2896,12 +3623,30 @@ class MCPBridgePlugin(BasePlugin):
             else:
                 logger.warning(f"❌ 注册 MCP 工具失败: {tool_class.name}")
         
+        # v1.8.0: 注册工具链为组合工具
+        chain_count = 0
+        chains_config = self.config.get("tool_chains", {})
+        if chains_config.get("chains_enabled", True):
+            for chain_name, chain in tool_chain_manager.get_enabled_chains().items():
+                try:
+                    info, tool_class = tool_chain_registry.register_chain(chain)
+                    info.plugin_name = self.plugin_name
+                    
+                    if component_registry.register_component(info, tool_class):
+                        chain_count += 1
+                        logger.info(f"🔗 注册工具链: {tool_class.name}")
+                    else:
+                        logger.warning(f"❌ 注册工具链失败: {tool_class.name}")
+                except Exception as e:
+                    logger.error(f"注册工具链 {chain_name} 失败: {e}")
+        
         self._initialized = True
-        logger.info(f"MCP 桥接插件初始化完成，已注册 {registered_count} 个工具")
+        logger.info(f"MCP 桥接插件初始化完成，已注册 {registered_count} 个工具，{chain_count} 个工具链")
         
         # 更新状态显示
         self._update_status_display()
         self._update_tool_list_display()
+        self._update_chains_status_display()
     
     def _parse_servers_json(self, servers_list: str) -> List[Dict]:
         """解析服务器列表 JSON 字符串"""
