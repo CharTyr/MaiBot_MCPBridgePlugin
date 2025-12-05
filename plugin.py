@@ -91,6 +91,7 @@ from src.plugin_system import (
     ConfigField,
     ToolParamType,
 )
+from src.plugin_system.base.config_types import section_meta
 from src.plugin_system.base.component_types import ToolInfo, ComponentType, EventType
 from src.plugin_system.base.base_events_handler import BaseEventHandler
 
@@ -2041,17 +2042,17 @@ class MCPBridgePlugin(BasePlugin):
     config_file_name: str = "config.toml"
     
     config_section_descriptions = {
-        "guide": "📖 快速入门",
-        "plugin": "🔘 插件开关",
-        "import_export": "📥 导入导出",
-        "quick_add": "➕ 快速添加服务器",
-        "servers": "🔌 服务器列表",
-        "status": "📊 运行状态",
-        "settings": "⚙️ 高级设置",
-        "tools": "🔧 工具管理",
-        "tool_chains": "🔗 Workflow (硬流程)",
-        "react": "🔄 ReAct (软流程)",
-        "permissions": "🔐 权限控制",
+        "guide": section_meta("📖 快速入门", order=1),
+        "plugin": section_meta("🔘 插件开关", order=2),
+        "import_export": section_meta("📥 导入导出", order=3),
+        "quick_add": section_meta("➕ 快速添加服务器", order=4),
+        "servers": section_meta("🔌 服务器列表", order=5),
+        "status": section_meta("📊 运行状态", order=6),
+        "settings": section_meta("⚙️ 高级设置", collapsed=True, order=10),
+        "tools": section_meta("🔧 工具管理", collapsed=True, order=11),
+        "tool_chains": section_meta("🔗 Workflow (硬流程)", collapsed=True, order=12),
+        "react": section_meta("🔄 ReAct (软流程)", collapsed=True, order=13),
+        "permissions": section_meta("🔐 权限控制", collapsed=True, order=20),
     }
     
     config_schema: dict = {
