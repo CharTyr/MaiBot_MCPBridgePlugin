@@ -467,10 +467,17 @@ def parse_mcp_parameters(input_schema: Dict[str, Any]) -> List[Tuple[str, ToolPa
     parameters = []
     
     if not input_schema:
+        # 为无参数的工具添加占位参数，避免某些模型报错
+        parameters.append(("_placeholder", ToolParamType.STRING, "占位参数，无需填写", False, None))
         return parameters
     
     properties = input_schema.get("properties", {})
     required = input_schema.get("required", [])
+    
+    # 如果没有任何参数，添加占位参数
+    if not properties:
+        parameters.append(("_placeholder", ToolParamType.STRING, "占位参数，无需填写", False, None))
+        return parameters
     
     for param_name, param_info in properties.items():
         json_type = param_info.get("type", "string")
