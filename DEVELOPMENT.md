@@ -9,7 +9,8 @@ MaiBot_MCPBridgePlugin/
 ├── plugin.py          # 主插件文件，包含所有核心逻辑
 ├── mcp_client.py      # MCP 客户端封装
 ├── tool_chain.py      # 工具链（Workflow）模块
-├── config_converter.py # 配置格式转换器
+├── core/
+│   └── claude_config.py # Claude Desktop mcpServers 解析/迁移
 ├── config.toml        # 运行时配置
 └── _manifest.json     # 插件元数据
 ```

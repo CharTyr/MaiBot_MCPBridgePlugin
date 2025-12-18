@@ -23,21 +23,19 @@ cp config.example.toml config.toml
 
 ### 2. 添加服务器
 
-编辑 `config.toml`，在 `[servers]` 的 `list` 中添加服务器：
+编辑 `config.toml`，在 `[servers]` 的 `claude_config_json` 中填写 Claude Desktop 的 `mcpServers` JSON：
 
-**免费服务器：**
-```json
-{"name": "time", "enabled": true, "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}
-```
-
-**带鉴权的服务器（v1.4.2）：**
-```json
-{"name": "my-server", "enabled": true, "transport": "streamable_http", "url": "https://mcp.xxx.com/mcp", "headers": {"Authorization": "Bearer 你的密钥"}}
-```
-
-**本地服务器（需要 uvx）：**
-```json
-{"name": "fetch", "enabled": true, "transport": "stdio", "command": "uvx", "args": ["mcp-server-fetch"]}
+```toml
+[servers]
+claude_config_json = '''
+{
+  "mcpServers": {
+    "time": { "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time" },
+    "my-server": { "transport": "streamable_http", "url": "https://mcp.xxx.com/mcp", "headers": { "Authorization": "Bearer 你的密钥" } },
+    "fetch": { "command": "uvx", "args": ["mcp-server-fetch"] }
+  }
+}
+'''
 ```
 
 ### 3. 启动
@@ -67,7 +65,7 @@ cp config.example.toml config.toml
 | `/mcp cache` | 查看缓存状态 |
 | `/mcp perm` | 查看权限配置 |
 | `/mcp import <json>` | 🆕 导入 Claude Desktop 配置 |
-| `/mcp export [claude]` | 🆕 导出配置 |
+| `/mcp export` | 🆕 导出配置 |
 | `/mcp search <关键词>` | 🆕 搜索工具 |
 | `/mcp chain` | 🆕 查看工具链 |
 | `/mcp chain <名称>` | 🆕 查看工具链详情 |
@@ -100,7 +98,7 @@ cp config.example.toml config.toml
 
 ### v1.6.0 新增
 - 📥 **配置导入** - 从 Claude Desktop 格式一键导入
-- 📤 **配置导出** - 导出为 Claude Desktop / Kiro / MaiBot 格式
+- 📤 **配置导出** - 导出为 Claude Desktop `mcpServers` 格式
 
 ### v1.4.0 新增
 - 🚫 **工具禁用** - WebUI 直接禁用不想用的工具
@@ -120,20 +118,20 @@ cp config.example.toml config.toml
 ### 服务器配置
 
 ```json
-[
-  {
-    "name": "服务器名",
-    "enabled": true,
-    "transport": "streamable_http",
-    "url": "https://..."
+{
+  "mcpServers": {
+    "server_name": {
+      "transport": "streamable_http",
+      "url": "https://..."
+    }
   }
-]
+}
 ```
 
 | 字段 | 说明 |
 |------|------|
-| `name` | 服务器名称（唯一） |
-| `enabled` | 是否启用 |
+| `mcpServers.<name>` | 服务器名称（唯一） |
+| `enabled` | 是否启用（可选，默认 true） |
 | `transport` | `stdio` / `sse` / `http` / `streamable_http` |
 | `url` | 远程服务器地址 |
 | `headers` | 🆕 鉴权头（如 `{"Authorization": "Bearer xxx"}`） |
@@ -191,7 +189,7 @@ cache_exclude_tools = "mcp_*_time_*"
 
 ---
 
-## 📥 配置导入导出（v1.6.0）
+## 📥 配置导入导出（Claude mcpServers）
 
 ### 从 Claude Desktop 导入
 
@@ -203,16 +201,13 @@ cache_exclude_tools = "mcp_*_time_*"
 
 支持的格式：
 - Claude Desktop 格式（`mcpServers` 对象）
-- Kiro MCP 格式
-- MaiBot 格式（数组）
+- 兼容旧版：MaiBot servers 列表数组（将自动迁移为 `mcpServers`）
 
 ### 导出配置
 
 ```
 /mcp export           # 导出为 Claude Desktop 格式（默认）
 /mcp export claude    # 导出为 Claude Desktop 格式
-/mcp export kiro      # 导出为 Kiro MCP 格式
-/mcp export maibot    # 导出为 MaiBot 格式
 ```
 
 ### 注意事项

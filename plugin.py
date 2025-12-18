@@ -1,6 +1,11 @@
 """
-MCP 桥接插件 v1.9.0
+MCP 桥接插件 v2.0.0
 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
+
+v2.0.0 配置与架构精简（功能保持不变）:
+- MCP 服务器配置统一为 Claude Desktop 的 mcpServers JSON（WebUI / config.toml 同一入口）
+- 兼容迁移：检测到旧版 servers.list 时自动迁移为 mcpServers（仅迁移，避免多入口混淆）
+- 移除 WebUI 导入导出/快速添加服务器的旧实现（避免 tomlkit 依赖与格式混乱）
 
 v1.9.0 双轨制架构:
 - 软流程 (ReAct): LLM 自主决策，动态多轮调用 MCP 工具，灵活应对复杂场景
@@ -27,7 +32,7 @@ v1.7.0 稳定性与易用性优化:
 
 v1.6.0 配置导入导出:
 - 新增 /mcp import 命令，支持从 Claude Desktop 格式导入配置
-- 新增 /mcp export 命令，导出为 Claude Desktop / Kiro / MaiBot 格式
+- 新增 /mcp export 命令，导出为 Claude Desktop (mcpServers) 格式
 - 支持 stdio、sse、http、streamable_http 全部传输类型
 - 自动跳过同名服务器，防止重复导入
 
@@ -45,10 +50,8 @@ v1.5.2 性能优化:
 - 稳定服务器逐渐增加间隔，减少不必要的网络请求
 - 断开的服务器使用较短间隔快速重连
 
-v1.5.1 易用性优化:
-- 新增「快速添加服务器」表单式配置，无需手写 JSON
-- 支持填写名称、类型、URL、命令、参数、鉴权头
-- 保存后自动合并到服务器列表
+v1.5.1 易用性优化（v2.0.0 起已移除）:
+- 「快速添加服务器」表单式配置（已统一为 Claude mcpServers JSON，避免多入口混淆）
 
 v1.5.0 性能优化:
 - 服务器并行连接：多个服务器同时连接，大幅减少启动时间
@@ -103,7 +106,11 @@ from .mcp_client import (
     TransportType,
     mcp_manager,
 )
-from .config_converter import ConfigConverter, ConversionResult
+from .core.claude_config import (
+    ClaudeConfigError,
+    legacy_servers_list_to_claude_config,
+    parse_claude_mcp_config,
+)
 from .tool_chain import (
     ToolChainDefinition,
     ToolChainStep,
@@ -735,22 +742,8 @@ class MCPToolProxy(BaseTool):
         
         if _plugin_instance is None:
             return None
-        
-        servers_section = _plugin_instance.config.get("servers", {})
-        if isinstance(servers_section, dict):
-            servers_list = servers_section.get("list", "[]")
-            if isinstance(servers_list, str):
-                try:
-                    servers = json.loads(servers_list) if servers_list.strip() else []
-                except json.JSONDecodeError:
-                    return None
-            elif isinstance(servers_list, list):
-                servers = servers_list
-            else:
-                return None
-        else:
-            servers = servers_section if isinstance(servers_section, list) else []
-        
+
+        servers = _plugin_instance._load_mcp_servers_config()
         for server_conf in servers:
             if server_conf.get("name") == self._mcp_server_name:
                 return server_conf.get("post_process")
@@ -1498,38 +1491,30 @@ class MCPStatusCommand(BaseCommand):
             await self.send_text("❌ 插件未初始化")
             return (True, None, True)
         
-        # 获取当前服务器列表
         servers_section = _plugin_instance.config.get("servers", {})
-        servers_list_str = servers_section.get("list", "[]") if isinstance(servers_section, dict) else "[]"
-        
-        try:
-            servers = json.loads(servers_list_str) if servers_list_str.strip() else []
-        except json.JSONDecodeError:
-            await self.send_text("❌ 当前服务器配置格式错误，无法导出")
-            return (True, None, True)
-        
-        if not servers:
+        if not isinstance(servers_section, dict):
+            servers_section = {}
+
+        claude_json = str(servers_section.get("claude_config_json", "") or "")
+        if not claude_json.strip():
+            legacy_list = str(servers_section.get("list", "") or "")
+            claude_json = legacy_servers_list_to_claude_config(legacy_list) or ""
+
+        if not claude_json.strip():
             await self.send_text("📤 当前没有配置任何服务器")
             return (True, None, True)
-        
-        # 确定导出格式
-        format_type = (format_type or "claude").lower()
-        if format_type not in ("claude", "kiro", "maibot"):
-            format_type = "claude"
-        
-        # 导出
+
         try:
-            exported = ConfigConverter.export_to_string(servers, format_type, pretty=True)
-            
-            format_name = {"claude": "Claude Desktop", "kiro": "Kiro MCP", "maibot": "MaiBot"}.get(format_type, format_type)
-            lines = [f"📤 导出为 {format_name} 格式 ({len(servers)} 个服务器):"]
-            lines.append("")
-            lines.append(exported)
-            
-            await self.send_text("\n".join(lines))
-        except Exception as e:
-            logger.error(f"导出配置失败: {e}")
-            await self.send_text(f"❌ 导出失败: {str(e)}")
+            pretty = json.dumps(json.loads(claude_json), ensure_ascii=False, indent=2)
+        except Exception:
+            pretty = claude_json
+
+        lines = ["📤 导出为 Claude Desktop 格式（mcpServers）:"]
+        if format_type and format_type.strip() and format_type.strip().lower() != "claude":
+            lines.append("（v2.0 已精简为仅 Claude 格式，忽略其他格式参数）")
+        lines.append("")
+        lines.append(pretty)
+        await self.send_text("\n".join(lines))
         
         return (True, None, True)
 
@@ -1845,9 +1830,9 @@ class MCPStatusCommand(BaseCommand):
             lines.append("  /mcp reconnect        重连断开的服务器")
             lines.append("  /mcp reconnect <名称> 重连指定服务器")
             lines.append("")
-            lines.append("配置导入导出:")
-            lines.append("  /mcp import <json>    导入配置")
-            lines.append("  /mcp export [格式]    导出配置")
+            lines.append("服务器配置（Claude）:")
+            lines.append("  /mcp import <json>    合并 Claude mcpServers 配置")
+            lines.append("  /mcp export           导出当前 mcpServers 配置")
             lines.append("")
             lines.append("工具链:")
             lines.append("  /mcp chain            查看工具链列表")
@@ -1888,8 +1873,7 @@ class MCPImportCommand(BaseCommand):
 
 支持的格式:
 • Claude Desktop 格式 (mcpServers 对象)
-• Kiro MCP 格式
-• MaiBot 格式 (数组)
+• 兼容旧版：MaiBot servers 列表数组（将自动迁移为 mcpServers）
 
 示例:
 /mcp import {"mcpServers":{"time":{"command":"uvx","args":["mcp-server-time"]}}}
@@ -1897,81 +1881,97 @@ class MCPImportCommand(BaseCommand):
 /mcp import {"mcpServers":{"api":{"url":"https://example.com/mcp","transport":"sse"}}}"""
             await self.send_text(help_text)
             return (True, None, True)
-        
-        # 获取现有服务器名称
-        servers_section = _plugin_instance.config.get("servers", {})
-        servers_list_str = servers_section.get("list", "[]") if isinstance(servers_section, dict) else "[]"
-        
+
+        raw_text = content.strip()
+
+        # 解析输入：支持 Claude mcpServers 或旧版 servers 列表数组
         try:
-            existing_servers = json.loads(servers_list_str) if servers_list_str.strip() else []
-        except json.JSONDecodeError:
-            existing_servers = []
-        
-        existing_names = {srv.get("name", "") for srv in existing_servers if isinstance(srv, dict)}
-        
-        # 执行导入
-        result = ConfigConverter.import_from_string(content.strip(), existing_names)
-        
-        # 构建响应
-        lines = []
-        
-        if not result.success:
-            lines.append("❌ 导入失败:")
-            for err in result.errors:
-                lines.append(f"  • {err}")
-            await self.send_text("\n".join(lines))
+            data = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            await self.send_text(f"❌ JSON 解析失败: {e}")
             return (True, None, True)
-        
-        if not result.servers:
-            lines.append("⚠️ 没有新服务器可导入")
-            if result.skipped:
-                lines.append("\n跳过的服务器:")
-                for s in result.skipped:
-                    lines.append(f"  • {s}")
-            if result.warnings:
-                lines.append("\n警告:")
-                for w in result.warnings:
-                    lines.append(f"  • {w}")
-            await self.send_text("\n".join(lines))
+
+        if isinstance(data, list):
+            migrated = legacy_servers_list_to_claude_config(raw_text)
+            if not migrated:
+                await self.send_text("❌ 旧版 servers 列表解析失败，无法迁移")
+                return (True, None, True)
+            data = json.loads(migrated)
+
+        if not isinstance(data, dict):
+            await self.send_text("❌ 配置必须是 JSON 对象（包含 mcpServers）")
             return (True, None, True)
-        
-        # 合并到现有列表
-        new_servers = existing_servers + result.servers
-        new_list_str = json.dumps(new_servers, ensure_ascii=False, indent=2)
-        
-        # 更新配置
+
+        incoming_mapping = data.get("mcpServers", data)
+        if not isinstance(incoming_mapping, dict):
+            await self.send_text("❌ mcpServers 必须是 JSON 对象")
+            return (True, None, True)
+
+        # 校验输入配置
+        try:
+            parse_claude_mcp_config(json.dumps({"mcpServers": incoming_mapping}, ensure_ascii=False))
+        except ClaudeConfigError as e:
+            await self.send_text(f"❌ 配置校验失败: {e}")
+            return (True, None, True)
+
+        servers_section = _plugin_instance.config.get("servers", {})
+        if not isinstance(servers_section, dict):
+            servers_section = {}
+
+        existing_json = str(servers_section.get("claude_config_json", "") or "")
+        if not existing_json.strip():
+            legacy_list = str(servers_section.get("list", "") or "")
+            existing_json = legacy_servers_list_to_claude_config(legacy_list) or ""
+
+        existing_mapping: Dict[str, Any] = {}
+        if existing_json.strip():
+            try:
+                parsed = json.loads(existing_json)
+                mapping = parsed.get("mcpServers", parsed)
+                if isinstance(mapping, dict):
+                    existing_mapping = mapping
+            except Exception:
+                existing_mapping = {}
+
+        added: List[str] = []
+        skipped: List[str] = []
+
+        for name, conf in incoming_mapping.items():
+            if name in existing_mapping:
+                skipped.append(str(name))
+                continue
+            existing_mapping[str(name)] = conf
+            added.append(str(name))
+
         if "servers" not in _plugin_instance.config:
             _plugin_instance.config["servers"] = {}
-        _plugin_instance.config["servers"]["list"] = new_list_str
-        
-        # 保存到配置文件
-        _plugin_instance._save_servers_list(new_list_str)
-        
-        # 构建成功响应
-        lines.append(f"✅ 成功导入 {len(result.servers)} 个服务器:")
-        for srv in result.servers:
-            transport = srv.get("transport", "stdio")
-            lines.append(f"  • {srv.get('name')} ({transport})")
-        
-        if result.skipped:
-            lines.append(f"\n⏭️ 跳过 {len(result.skipped)} 个:")
-            for s in result.skipped[:5]:
-                lines.append(f"  • {s}")
-            if len(result.skipped) > 5:
-                lines.append(f"  ... 还有 {len(result.skipped) - 5} 个")
-        
-        if result.warnings:
-            lines.append("\n⚠️ 警告:")
-            for w in result.warnings[:3]:
-                lines.append(f"  • {w}")
-        
-        if result.errors:
-            lines.append("\n❌ 部分失败:")
-            for e in result.errors[:3]:
-                lines.append(f"  • {e}")
-        
+
+        _plugin_instance.config["servers"]["claude_config_json"] = json.dumps(
+            {"mcpServers": existing_mapping}, ensure_ascii=False, indent=2
+        )
+
+        # 持久化到配置文件（使用插件基类的写入逻辑）
+        try:
+            config_path = Path(_plugin_instance.plugin_dir) / _plugin_instance.config_file_name
+            _plugin_instance._save_config_to_file(_plugin_instance.config, str(config_path))
+        except Exception as e:
+            logger.warning(f"保存配置文件失败: {e}")
+
+        lines = []
+        if added:
+            lines.append(f"✅ 成功导入 {len(added)} 个服务器:")
+            for n in added[:20]:
+                lines.append(f"  • {n}")
+            if len(added) > 20:
+                lines.append(f"  ... 还有 {len(added) - 20} 个")
+        else:
+            lines.append("⚠️ 没有新服务器可导入")
+
+        if skipped:
+            lines.append(f"\n⏭️ 跳过 {len(skipped)} 个已存在的服务器")
+
         lines.append("\n💡 发送 /mcp reconnect 使配置生效")
-        
+
         await self.send_text("\n".join(lines))
         return (True, None, True)
 
@@ -2002,9 +2002,6 @@ class MCPStartupHandler(BaseEventHandler):
         
         await mcp_manager.start_heartbeat()
         
-        # v1.6.0: 启动配置文件监控（用于 WebUI 导入）
-        await _plugin_instance._start_config_watcher()
-        
         return (True, True, None, None, None)
 
 
@@ -2022,10 +2019,9 @@ class MCPStopHandler(BaseEventHandler):
         global _plugin_instance
         
         logger.info("MCP 桥接插件收到 ON_STOP 事件，正在关闭...")
-        
-        # v1.6.0: 停止配置文件监控
-        if _plugin_instance:
-            await _plugin_instance._stop_config_watcher()
+
+        if _plugin_instance is not None:
+            await _plugin_instance._stop_status_refresher()
         
         await mcp_manager.shutdown()
         mcp_tool_registry.clear()
@@ -2040,7 +2036,7 @@ class MCPStopHandler(BaseEventHandler):
 
 @register_plugin
 class MCPBridgePlugin(BasePlugin):
-    """MCP 桥接插件 v1.8.0 - 将 MCP 服务器的工具桥接到 MaiBot"""
+    """MCP 桥接插件 v2.0.0 - 将 MCP 服务器的工具桥接到 MaiBot"""
     
     plugin_name: str = "mcp_bridge_plugin"
     enable_plugin: bool = False  # 默认禁用，用户需在 WebUI 手动启用
@@ -2051,10 +2047,8 @@ class MCPBridgePlugin(BasePlugin):
     config_section_descriptions = {
         "guide": section_meta("📖 快速入门", order=1),
         "plugin": section_meta("🔘 插件开关", order=2),
-        "import_export": section_meta("📥 导入导出", order=3),
-        "quick_add": section_meta("➕ 快速添加服务器", order=4),
-        "servers": section_meta("🔌 服务器列表", order=5),
-        "status": section_meta("📊 运行状态", order=6),
+        "servers": section_meta("🔌 MCP Servers（Claude）", order=4),
+        "status": section_meta("📊 运行状态", order=5),
         "settings": section_meta("⚙️ 高级设置", collapsed=True, order=10),
         "tools": section_meta("🔧 工具管理", collapsed=True, order=11),
         "tool_chains": section_meta("🔗 Workflow (硬流程)", collapsed=True, order=12),
@@ -2067,7 +2061,7 @@ class MCPBridgePlugin(BasePlugin):
         "guide": {
             "quick_start": ConfigField(
                 type=str,
-                default="1. 从下方链接获取 MCP 服务器  2. 在「快速添加」填写信息  3. 保存后发送 /mcp reconnect",
+                default="1. 从下方链接获取 MCP 服务器  2. 在「MCP Servers（Claude）」粘贴 mcpServers 配置  3. 保存后发送 /mcp reconnect",
                 description="三步开始使用",
                 label="🚀 快速入门",
                 disabled=True,
@@ -2079,13 +2073,13 @@ class MCPBridgePlugin(BasePlugin):
                 description="复制链接到浏览器打开，获取免费 MCP 服务器",
                 label="🌐 获取 MCP 服务器",
                 disabled=True,
-                hint="魔搭 ModelScope 国内免费推荐，复制服务器 URL 到「快速添加」即可",
+                hint="魔搭 ModelScope 国内免费推荐，将 mcpServers 配置粘贴到「MCP Servers（Claude）」即可",
                 order=2,
             ),
             "example_config": ConfigField(
                 type=str,
-                default='{"name": "time", "enabled": true, "transport": "streamable_http", "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}',
-                description="复制到服务器列表可直接使用（免费时间服务器）",
+                default='{"mcpServers":{"time":{"url":"https://mcp.api-inference.modelscope.cn/server/mcp-server-time"}}}',
+                description="复制到 MCP Servers（Claude）可直接使用（免费时间服务器）",
                 label="📝 配置示例",
                 disabled=True,
                 order=3,
@@ -2097,50 +2091,6 @@ class MCPBridgePlugin(BasePlugin):
                 default=True,
                 description="是否启用插件",
                 label="启用插件",
-            ),
-        },
-        # v1.6.0: 导入导出配置
-        "import_export": {
-            "import_config": ConfigField(
-                type=str,
-                default="",
-                description="粘贴 Claude Desktop 或其他格式的 MCP 配置 JSON",
-                label="📥 导入配置",
-                input_type="textarea",
-                rows=8,
-                placeholder='{"mcpServers":{"time":{"command":"uvx","args":["mcp-server-time"]}}}',
-                hint="粘贴配置后点击保存，2秒内自动导入。查看下方「导入结果」确认状态",
-                order=1,
-            ),
-            "import_result": ConfigField(
-                type=str,
-                default="",
-                description="导入结果（只读）",
-                label="📋 导入结果",
-                input_type="textarea",
-                disabled=True,
-                rows=4,
-                order=2,
-            ),
-            "export_format": ConfigField(
-                type=str,
-                default="claude",
-                description="导出格式",
-                label="📤 导出格式",
-                choices=["claude", "kiro", "maibot"],
-                hint="claude: Claude Desktop 格式 | kiro: Kiro MCP 格式 | maibot: 本插件格式",
-                order=3,
-            ),
-            "export_result": ConfigField(
-                type=str,
-                default="(点击保存后生成)",
-                description="导出的配置（只读，可复制）",
-                label="📤 导出结果",
-                input_type="textarea",
-                disabled=True,
-                rows=10,
-                hint="复制此内容到 Claude Desktop 或其他支持 MCP 的应用",
-                order=4,
             ),
         },
         "settings": {
@@ -2268,7 +2218,7 @@ class MCPBridgePlugin(BasePlugin):
                 min=5.0,
                 max=60.0,
                 step=5.0,
-                hint="值越小刷新越频繁，但会增加少量磁盘写入",
+                hint="值越小刷新越频繁，但会增加少量 CPU 消耗",
                 order=14,
             ),
             "enable_resources": ConfigField(
@@ -2705,84 +2655,40 @@ mcp_bing_*""",
                 order=10,
             ),
         },
-        # v1.5.1: 快速添加服务器（表单式配置）
-        "quick_add": {
-            "server_name": ConfigField(
-                type=str,
-                default="",
-                description="服务器唯一名称（英文，如 time-server）",
-                label="📛 服务器名称",
-                placeholder="my-mcp-server",
-                hint="必填，用于标识服务器",
-                order=1,
-            ),
-            "server_type": ConfigField(
-                type=str,
-                default="streamable_http",
-                description="传输类型",
-                label="📡 传输类型",
-                choices=["streamable_http", "http", "sse", "stdio"],
-                hint="远程服务器选 streamable_http/http/sse，本地选 stdio",
-                order=2,
-            ),
-            "server_url": ConfigField(
-                type=str,
-                default="",
-                description="服务器 URL（远程服务器必填）",
-                label="🌐 服务器 URL",
-                placeholder="https://mcp.api-inference.modelscope.cn/server/xxx",
-                hint="streamable_http/http/sse 类型必填",
-                order=3,
-            ),
-            "server_command": ConfigField(
-                type=str,
-                default="",
-                description="启动命令（stdio 类型必填）",
-                label="⌨️ 启动命令",
-                placeholder="uvx 或 npx",
-                hint="stdio 类型必填，如 uvx、npx、python",
-                order=4,
-            ),
-            "server_args": ConfigField(
-                type=str,
-                default="",
-                description="命令参数（每行一个）",
-                label="📝 命令参数",
-                input_type="textarea",
-                rows=3,
-                placeholder="mcp-server-fetch",
-                hint="stdio 类型使用，每行一个参数",
-                order=5,
-            ),
-            "server_headers": ConfigField(
-                type=str,
-                default="",
-                description="鉴权头（JSON 格式，可选）",
-                label="🔑 鉴权头（可选）",
-                placeholder='{"Authorization": "Bearer xxx"}',
-                hint="需要鉴权的服务器填写，如 ModelScope 的 API Key",
-                order=6,
-            ),
-            "add_button": ConfigField(
-                type=str,
-                default="填写上方信息后，点击保存将自动添加到服务器列表",
-                description="",
-                label="💡 使用说明",
-                disabled=True,
-                hint="保存配置后，新服务器会自动添加到下方列表。重启 MaiBot 或发送 /mcp reconnect 生效",
-                order=7,
-            ),
-        },
+        # v2.0: 服务器配置统一为 Claude Desktop mcpServers 规范（JSON）
         "servers": {
-            "list": ConfigField(
+            "claude_config_json": ConfigField(
                 type=str,
-                default="[]",
-                description="MCP 服务器列表（JSON 格式，高级用户可直接编辑）",
-                label="🔌 服务器列表（高级）",
+                default='{"mcpServers":{}}',
+                description="Claude Desktop 规范的 MCP 配置（JSON）",
+                label="🔌 MCP Servers（Claude 规范）",
                 input_type="textarea",
-                rows=15,
-                hint="⚠️ JSON 数组格式。新手建议使用上方「快速添加」",
+                rows=18,
+                hint="仅支持 Claude Desktop 的 mcpServers JSON。每个服务器需包含 command(stdio) 或 url(remote)。",
                 order=1,
+            ),
+            "claude_config_guide": ConfigField(
+                type=str,
+                default="""示例：
+{
+  "mcpServers": {
+    "fetch": { "command": "uvx", "args": ["mcp-server-fetch"] },
+    "time": { "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time" }
+  }
+}
+
+可选字段：
+- enabled: true/false
+- headers: {"Authorization":"Bearer ..."}
+- env: {"KEY":"VALUE"}
+- transport/type: "streamable_http" | "http" | "sse"（remote 可选，默认 streamable_http）
+""",
+                description="配置说明（只读）",
+                label="📖 配置说明",
+                input_type="textarea",
+                disabled=True,
+                rows=12,
+                order=2,
             ),
         },
         "status": {
@@ -2905,6 +2811,8 @@ mcp_bing_*""",
         
         super().__init__(*args, **kwargs)
         self._initialized = False
+        self._status_refresh_running = False
+        self._status_refresh_task: Optional[asyncio.Task] = None
         _plugin_instance = self
         
         # 配置 MCP 管理器
@@ -2941,414 +2849,11 @@ mcp_bing_*""",
         # 注册状态变化回调
         mcp_manager.set_status_change_callback(self._update_status_display)
         
-        # v1.6.0: 处理 WebUI 导入导出
-        self._process_webui_import_export()
-        
-        # v1.5.1: 处理快速添加服务器
-        self._process_quick_add_server()
+        # v2.0: 服务器配置统一由 servers.claude_config_json 提供（不再通过 WebUI 导入/快速添加写入旧 servers.list）
         
         # v1.8.0: 初始化工具链管理器
         tool_chain_manager.set_executor(mcp_manager)
         self._load_tool_chains()
-
-    def _process_webui_import_export(self) -> None:
-        """v1.6.0: 处理 WebUI 导入导出"""
-        import_export = self.config.get("import_export", {})
-        import_config = import_export.get("import_config", "").strip()
-        export_format = import_export.get("export_format", "claude")
-
-        # 处理导入
-        if import_config:
-            self._do_webui_import(import_config)
-
-        # 处理导出（每次都更新）
-        self._do_webui_export(export_format)
-
-    def _do_webui_import(self, import_config: str) -> None:
-        """执行 WebUI 导入"""
-        # 获取现有服务器
-        servers_section = self.config.get("servers", {})
-        servers_list_str = servers_section.get("list", "[]") if isinstance(servers_section, dict) else "[]"
-
-        try:
-            existing_servers = json.loads(servers_list_str) if servers_list_str.strip() else []
-        except json.JSONDecodeError:
-            existing_servers = []
-
-        existing_names = {srv.get("name", "") for srv in existing_servers if isinstance(srv, dict)}
-
-        # 执行导入
-        result = ConfigConverter.import_from_string(import_config, existing_names)
-
-        # 构建结果消息
-        lines = []
-
-        if not result.success:
-            lines.append("❌ 导入失败:")
-            for err in result.errors:
-                lines.append(f"  • {err}")
-        elif not result.servers:
-            lines.append("⚠️ 没有新服务器可导入")
-            if result.skipped:
-                lines.append(f"跳过: {', '.join(result.skipped[:5])}")
-        else:
-            # 合并到现有列表
-            new_servers = existing_servers + result.servers
-            new_list_str = json.dumps(new_servers, ensure_ascii=False, indent=2)
-
-            # 更新配置
-            if "servers" not in self.config:
-                self.config["servers"] = {}
-            self.config["servers"]["list"] = new_list_str
-
-            # 保存到配置文件
-            self._save_servers_list(new_list_str)
-
-            lines.append(f"✅ 成功导入 {len(result.servers)} 个服务器:")
-            for srv in result.servers[:5]:
-                lines.append(f"  • {srv.get('name')} ({srv.get('transport', 'stdio')})")
-            if len(result.servers) > 5:
-                lines.append(f"  ... 还有 {len(result.servers) - 5} 个")
-
-            if result.skipped:
-                lines.append(f"跳过: {len(result.skipped)} 个已存在")
-
-            lines.append("")
-            lines.append("💡 发送 /mcp reconnect 生效")
-
-        # 更新导入结果显示
-        if "import_export" not in self.config:
-            self.config["import_export"] = {}
-        self.config["import_export"]["import_result"] = "\n".join(lines)
-
-        # 清空导入框
-        self.config["import_export"]["import_config"] = ""
-
-        # 保存结果到配置文件
-        self._save_import_export_result("\n".join(lines))
-
-    def _do_webui_export(self, export_format: str) -> None:
-        """执行 WebUI 导出"""
-        # 获取当前服务器列表
-        servers_section = self.config.get("servers", {})
-        servers_list_str = servers_section.get("list", "[]") if isinstance(servers_section, dict) else "[]"
-
-        try:
-            servers = json.loads(servers_list_str) if servers_list_str.strip() else []
-        except json.JSONDecodeError:
-            servers = []
-
-        if not servers:
-            export_result = "(当前没有配置任何服务器)"
-        else:
-            try:
-                export_result = ConfigConverter.export_to_string(servers, export_format, pretty=True)
-            except Exception as e:
-                export_result = f"(导出失败: {e})"
-
-        # 更新导出结果
-        if "import_export" not in self.config:
-            self.config["import_export"] = {}
-        self.config["import_export"]["export_result"] = export_result
-
-    def _save_import_export_result(self, result: str) -> None:
-        """保存导入导出结果到配置文件"""
-        import tomlkit
-        from tomlkit.items import String, StringType, Trivia
-
-        try:
-            config_path = Path(__file__).parent / "config.toml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    doc = tomlkit.load(f)
-
-                if "import_export" not in doc:
-                    doc["import_export"] = tomlkit.table()
-
-                # 清空导入框
-                doc["import_export"]["import_config"] = ""
-
-                # 更新结果
-                if "\n" in result:
-                    ml_string = String(StringType.MLB, result, result, Trivia())
-                    doc["import_export"]["import_result"] = ml_string
-                else:
-                    doc["import_export"]["import_result"] = result
-
-                with open(config_path, "w", encoding="utf-8") as f:
-                    tomlkit.dump(doc, f)
-        except Exception as e:
-            logger.warning(f"保存导入结果失败: {e}")
-
-    async def _start_config_watcher(self) -> None:
-        """v1.6.0: 启动配置文件监控（用于 WebUI 实时导入）"""
-        self._config_watcher_running = True
-        self._config_watcher_task = asyncio.create_task(self._config_watcher_loop())
-        logger.info("配置文件监控已启动")
-
-    async def _stop_config_watcher(self) -> None:
-        """v1.6.0: 停止配置文件监控"""
-        self._config_watcher_running = False
-        if hasattr(self, "_config_watcher_task") and self._config_watcher_task:
-            self._config_watcher_task.cancel()
-            try:
-                await self._config_watcher_task
-            except asyncio.CancelledError:
-                pass
-            self._config_watcher_task = None
-        logger.info("配置文件监控已停止")
-
-    async def _config_watcher_loop(self) -> None:
-        """v1.6.0: 配置文件监控循环 + v1.7.0: 状态实时刷新"""
-        import tomlkit
-
-        config_path = Path(__file__).parent / "config.toml"
-        last_mtime = config_path.stat().st_mtime if config_path.exists() else 0
-        last_status_update = time.time()
-
-        while self._config_watcher_running:
-            try:
-                await asyncio.sleep(2)  # 每 2 秒检查一次
-
-                # v1.7.0: 定期更新状态显示（从配置读取）
-                settings = self.config.get("settings", {})
-                status_refresh_enabled = settings.get("status_refresh_enabled", True)
-                status_refresh_interval = settings.get("status_refresh_interval", 10.0)
-
-                current_time = time.time()
-                if status_refresh_enabled and current_time - last_status_update >= status_refresh_interval:
-                    self._update_status_display()
-                    last_status_update = current_time
-
-                if not config_path.exists():
-                    continue
-
-                current_mtime = config_path.stat().st_mtime
-                if current_mtime <= last_mtime:
-                    continue
-
-                last_mtime = current_mtime
-                logger.debug("检测到配置文件变化，检查是否有导入请求...")
-
-                # 读取配置文件
-                try:
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        doc = tomlkit.load(f)
-                except Exception as e:
-                    logger.warning(f"读取配置文件失败: {e}")
-                    continue
-
-                # 检查是否有导入配置
-                import_export = doc.get("import_export", {})
-                import_config = import_export.get("import_config", "")
-
-                if not import_config or not str(import_config).strip():
-                    continue
-
-                import_config_str = str(import_config).strip()
-                logger.info(f"检测到 WebUI 导入请求，开始处理...")
-
-                # 执行导入
-                await self._execute_webui_import(import_config_str, doc, config_path)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"配置监控循环出错: {e}")
-                await asyncio.sleep(5)
-
-    async def _execute_webui_import(self, import_config: str, doc, config_path: Path) -> None:
-        """v1.6.0: 执行 WebUI 导入"""
-        import tomlkit
-        from tomlkit.items import String, StringType, Trivia
-
-        # 获取现有服务器
-        servers_section = doc.get("servers", {})
-        servers_list_str = str(servers_section.get("list", "[]"))
-
-        try:
-            existing_servers = json.loads(servers_list_str) if servers_list_str.strip() else []
-        except json.JSONDecodeError:
-            existing_servers = []
-
-        existing_names = {srv.get("name", "") for srv in existing_servers if isinstance(srv, dict)}
-
-        # 执行导入
-        result = ConfigConverter.import_from_string(import_config, existing_names)
-
-        # 构建结果消息
-        lines = []
-
-        if not result.success:
-            lines.append("❌ 导入失败:")
-            for err in result.errors:
-                lines.append(f"  • {err}")
-        elif not result.servers:
-            lines.append("⚠️ 没有新服务器可导入")
-            if result.skipped:
-                lines.append(f"跳过: {', '.join(result.skipped[:5])}")
-        else:
-            # 合并到现有列表
-            new_servers = existing_servers + result.servers
-            new_list_str = json.dumps(new_servers, ensure_ascii=False, indent=2)
-
-            # 更新 servers.list
-            if "servers" not in doc:
-                doc["servers"] = tomlkit.table()
-            ml_string = String(StringType.MLB, new_list_str, new_list_str, Trivia())
-            doc["servers"]["list"] = ml_string
-
-            lines.append(f"✅ 成功导入 {len(result.servers)} 个服务器:")
-            for srv in result.servers[:5]:
-                lines.append(f"  • {srv.get('name')} ({srv.get('transport', 'stdio')})")
-            if len(result.servers) > 5:
-                lines.append(f"  ... 还有 {len(result.servers) - 5} 个")
-
-            if result.skipped:
-                lines.append(f"跳过: {len(result.skipped)} 个已存在")
-
-            lines.append("")
-            lines.append("💡 发送 /mcp reconnect 使新服务器生效")
-
-            logger.info(f"WebUI 导入成功: {len(result.servers)} 个服务器")
-
-        # 更新导入结果并清空导入框
-        if "import_export" not in doc:
-            doc["import_export"] = tomlkit.table()
-
-        doc["import_export"]["import_config"] = ""
-        result_text = "\n".join(lines)
-        if "\n" in result_text:
-            ml_result = String(StringType.MLB, result_text, result_text, Trivia())
-            doc["import_export"]["import_result"] = ml_result
-        else:
-            doc["import_export"]["import_result"] = result_text
-
-        # 保存配置文件
-        try:
-            with open(config_path, "w", encoding="utf-8") as f:
-                tomlkit.dump(doc, f)
-            logger.info("WebUI 导入结果已保存")
-        except Exception as e:
-            logger.error(f"保存导入结果失败: {e}")
-
-    def _process_quick_add_server(self) -> None:
-        """v1.5.1: 处理快速添加服务器表单，将新服务器合并到列表"""
-        quick_add = self.config.get("quick_add", {})
-        server_name = quick_add.get("server_name", "").strip()
-        
-        if not server_name:
-            return  # 没有填写名称，跳过
-        
-        server_type = quick_add.get("server_type", "streamable_http")
-        server_url = quick_add.get("server_url", "").strip()
-        server_command = quick_add.get("server_command", "").strip()
-        server_args_str = quick_add.get("server_args", "").strip()
-        server_headers_str = quick_add.get("server_headers", "").strip()
-        
-        # 构建新服务器配置
-        new_server = {
-            "name": server_name,
-            "enabled": True,
-            "transport": server_type,
-        }
-        
-        if server_type == "stdio":
-            if not server_command:
-                logger.warning(f"快速添加: stdio 类型需要填写命令，跳过 {server_name}")
-                return
-            new_server["command"] = server_command
-            if server_args_str:
-                new_server["args"] = [arg.strip() for arg in server_args_str.split("\n") if arg.strip()]
-        else:
-            if not server_url:
-                logger.warning(f"快速添加: {server_type} 类型需要填写 URL，跳过 {server_name}")
-                return
-            new_server["url"] = server_url
-        
-        # 解析鉴权头
-        if server_headers_str:
-            try:
-                headers = json.loads(server_headers_str)
-                if isinstance(headers, dict):
-                    new_server["headers"] = headers
-            except json.JSONDecodeError:
-                logger.warning("快速添加: 鉴权头 JSON 格式错误，已忽略")
-        
-        # 获取现有服务器列表
-        servers_section = self.config.get("servers", {})
-        servers_list_str = servers_section.get("list", "[]") if isinstance(servers_section, dict) else "[]"
-        
-        try:
-            servers_list = json.loads(servers_list_str) if servers_list_str.strip() else []
-        except json.JSONDecodeError:
-            servers_list = []
-        
-        # 检查是否已存在同名服务器
-        for existing in servers_list:
-            if existing.get("name") == server_name:
-                logger.info(f"快速添加: 服务器 {server_name} 已存在，跳过")
-                self._clear_quick_add_fields()
-                return
-        
-        # 添加新服务器
-        servers_list.append(new_server)
-        logger.info(f"快速添加: 已添加服务器 {server_name} ({server_type})")
-        
-        # 更新配置
-        new_list_str = json.dumps(servers_list, ensure_ascii=False, indent=2)
-        if "servers" not in self.config:
-            self.config["servers"] = {}
-        self.config["servers"]["list"] = new_list_str
-        
-        # 清空快速添加字段
-        self._clear_quick_add_fields()
-        
-        # 保存到配置文件
-        self._save_servers_list(new_list_str)
-    
-    def _clear_quick_add_fields(self) -> None:
-        """清空快速添加表单字段"""
-        if "quick_add" not in self.config:
-            self.config["quick_add"] = {}
-        self.config["quick_add"]["server_name"] = ""
-        self.config["quick_add"]["server_url"] = ""
-        self.config["quick_add"]["server_command"] = ""
-        self.config["quick_add"]["server_args"] = ""
-        self.config["quick_add"]["server_headers"] = ""
-    
-    def _save_servers_list(self, servers_json: str) -> None:
-        """保存服务器列表到配置文件"""
-        import tomlkit
-        from tomlkit.items import String, StringType, Trivia
-        
-        try:
-            config_path = Path(__file__).parent / "config.toml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    doc = tomlkit.load(f)
-                
-                if "servers" not in doc:
-                    doc["servers"] = tomlkit.table()
-                
-                # 使用多行字符串
-                ml_string = String(StringType.MLB, servers_json, servers_json, Trivia())
-                doc["servers"]["list"] = ml_string
-                
-                # 清空快速添加字段
-                if "quick_add" in doc:
-                    doc["quick_add"]["server_name"] = ""
-                    doc["quick_add"]["server_url"] = ""
-                    doc["quick_add"]["server_command"] = ""
-                    doc["quick_add"]["server_args"] = ""
-                    doc["quick_add"]["server_headers"] = ""
-                
-                with open(config_path, "w", encoding="utf-8") as f:
-                    tomlkit.dump(doc, f)
-                    
-                logger.info("服务器列表已保存到配置文件")
-        except Exception as e:
-            logger.warning(f"保存服务器列表失败: {e}")
     
     def _process_quick_add_chain(self) -> None:
         """v1.8.0: 处理快速添加工具链表单"""
@@ -3477,33 +2982,10 @@ mcp_bing_*""",
     
     def _save_chains_list(self, chains_json: str) -> None:
         """保存工具链列表到配置文件"""
-        import tomlkit
-        from tomlkit.items import String, StringType, Trivia
-        
         try:
-            config_path = Path(__file__).parent / "config.toml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    doc = tomlkit.load(f)
-                
-                if "tool_chains" not in doc:
-                    doc["tool_chains"] = tomlkit.table()
-                
-                # 保存工具链列表
-                ml_string = String(StringType.MLB, chains_json, chains_json, Trivia())
-                doc["tool_chains"]["chains_list"] = ml_string
-                
-                # 清空快速添加字段
-                doc["tool_chains"]["quick_chain_name"] = ""
-                doc["tool_chains"]["quick_chain_desc"] = ""
-                doc["tool_chains"]["quick_chain_params"] = ""
-                doc["tool_chains"]["quick_chain_steps"] = ""
-                doc["tool_chains"]["quick_chain_add"] = ""
-                
-                with open(config_path, "w", encoding="utf-8") as f:
-                    tomlkit.dump(doc, f)
-                    
-                logger.info("工具链列表已保存到配置文件")
+            config_path = Path(self.plugin_dir) / self.config_file_name
+            self._save_config_to_file(self.config, str(config_path))
+            logger.info("工具链列表已保存到配置文件")
         except Exception as e:
             logger.warning(f"保存工具链列表失败: {e}")
     
@@ -3655,9 +3137,6 @@ mcp_bing_*""",
     
     def _update_react_status_display(self, registered_tools: List[str], filter_mode: str, filter_patterns: List[str]) -> None:
         """更新 ReAct 工具状态显示"""
-        import tomlkit
-        from tomlkit.items import String, StringType, Trivia
-        
         if not registered_tools:
             status_text = "(未注册任何工具)"
         else:
@@ -3676,24 +3155,6 @@ mcp_bing_*""",
         if "react" not in self.config:
             self.config["react"] = {}
         self.config["react"]["react_status"] = status_text
-        
-        # 写入配置文件
-        try:
-            config_path = Path(__file__).parent / "config.toml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    doc = tomlkit.load(f)
-                
-                if "react" not in doc:
-                    doc["react"] = tomlkit.table()
-                
-                ml_string = String(StringType.MLB, status_text, status_text, Trivia())
-                doc["react"]["react_status"] = ml_string
-                
-                with open(config_path, "w", encoding="utf-8") as f:
-                    tomlkit.dump(doc, f)
-        except Exception as e:
-            logger.warning(f"更新 ReAct 状态显示失败: {e}")
     
     def _convert_mcp_params_to_react_format(self, input_schema: Dict) -> List[Dict[str, Any]]:
         """将 MCP 工具参数转换为 ReAct 工具参数格式"""
@@ -3721,9 +3182,6 @@ mcp_bing_*""",
     
     def _update_chains_status_display(self) -> None:
         """v1.8.0: 更新工具链状态显示"""
-        import tomlkit
-        from tomlkit.items import String, StringType, Trivia
-        
         chains = tool_chain_manager.get_all_chains()
         
         if not chains:
@@ -3755,24 +3213,6 @@ mcp_bing_*""",
         if "tool_chains" not in self.config:
             self.config["tool_chains"] = {}
         self.config["tool_chains"]["chains_status"] = status_text
-        
-        # 写入配置文件
-        try:
-            config_path = Path(__file__).parent / "config.toml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    doc = tomlkit.load(f)
-                
-                if "tool_chains" not in doc:
-                    doc["tool_chains"] = tomlkit.table()
-                
-                ml_string = String(StringType.MLB, status_text, status_text, Trivia())
-                doc["tool_chains"]["chains_status"] = ml_string
-                
-                with open(config_path, "w", encoding="utf-8") as f:
-                    tomlkit.dump(doc, f)
-        except Exception as e:
-            logger.warning(f"更新工具链状态显示失败: {e}")
     
     def _get_disabled_tools(self) -> set:
         """v1.4.0: 获取禁用的工具列表"""
@@ -3784,19 +3224,8 @@ mcp_bing_*""",
         """异步连接所有配置的 MCP 服务器（v1.5.0: 并行连接优化）"""
         import asyncio
         settings = self.config.get("settings", {})
-        
-        servers_section = self.config.get("servers", [])
-        
-        if isinstance(servers_section, dict):
-            servers_list = servers_section.get("list", [])
-            if isinstance(servers_list, str):
-                servers_config = self._parse_servers_json(servers_list)
-            elif isinstance(servers_list, list):
-                servers_config = servers_list
-            else:
-                servers_config = []
-        else:
-            servers_config = servers_section
+
+        servers_config = self._load_mcp_servers_config()
         
         if not servers_config:
             logger.warning("未配置任何 MCP 服务器")
@@ -3926,39 +3355,110 @@ mcp_bing_*""",
         self._update_status_display()
         self._update_tool_list_display()
         self._update_chains_status_display()
+        self._start_status_refresher()
     
-    def _parse_servers_json(self, servers_list: str) -> List[Dict]:
-        """解析服务器列表 JSON 字符串"""
-        if not servers_list.strip():
+    def _start_status_refresher(self) -> None:
+        """启动 WebUI 状态刷新任务（不写入磁盘）"""
+        task = getattr(self, "_status_refresh_task", None)
+        if task and not task.done():
+            return
+
+        self._status_refresh_running = True
+        self._status_refresh_task = asyncio.create_task(self._status_refresh_loop())
+
+    async def _stop_status_refresher(self) -> None:
+        """停止 WebUI 状态刷新任务"""
+        self._status_refresh_running = False
+        task = getattr(self, "_status_refresh_task", None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._status_refresh_task = None
+
+    async def _status_refresh_loop(self) -> None:
+        """定期刷新 WebUI 展示字段（状态/工具列表/工具链状态）"""
+        while getattr(self, "_status_refresh_running", False):
+            try:
+                settings = self.config.get("settings", {})
+                enabled = bool(settings.get("status_refresh_enabled", True))
+                interval = float(settings.get("status_refresh_interval", 10.0) or 10.0)
+                interval = max(5.0, min(interval, 60.0))
+
+                if enabled and self._initialized:
+                    self._update_status_display()
+                    self._update_tool_list_display()
+                    self._update_chains_status_display()
+
+                await asyncio.sleep(interval if enabled else 5.0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"状态刷新任务异常: {e}")
+                await asyncio.sleep(5.0)
+
+    def _load_mcp_servers_config(self) -> List[Dict[str, Any]]:
+        """v2.0: 从 Claude mcpServers JSON 加载服务器配置。
+
+        - 唯一主入口：config.servers.claude_config_json
+        - 兼容：若旧版 servers.list 存在且 claude_config_json 为空，会自动迁移并写回内存配置
+        """
+        servers_section = self.config.get("servers", {})
+        if not isinstance(servers_section, dict):
+            servers_section = {}
+
+        claude_json = str(servers_section.get("claude_config_json", "") or "")
+
+        if not claude_json.strip():
+            legacy_list = str(servers_section.get("list", "") or "")
+            migrated = legacy_servers_list_to_claude_config(legacy_list)
+            if migrated:
+                claude_json = migrated
+                if "servers" not in self.config:
+                    self.config["servers"] = {}
+                self.config["servers"]["claude_config_json"] = migrated
+                logger.info("检测到旧版 servers.list，已自动迁移为 Claude mcpServers（请在 WebUI 保存一次以固化）")
+
+        if not claude_json.strip():
             return []
-        
-        content = servers_list.strip()
-        
+
         try:
-            parsed = json.loads(content)
-            if isinstance(parsed, list):
-                return parsed
-            elif isinstance(parsed, dict):
-                logger.warning("服务器配置是单个对象，已自动转换为数组")
-                return [parsed]
-            else:
-                logger.error("服务器配置格式错误: 期望数组或对象")
-                return []
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON 解析失败: {e}")
-            
-            if content.startswith("{") and not content.startswith("["):
-                try:
-                    fixed_content = f"[{content}]"
-                    parsed = json.loads(fixed_content)
-                    if isinstance(parsed, list):
-                        logger.warning("✅ 自动修复成功！请修正配置格式")
-                        return parsed
-                except json.JSONDecodeError:
-                    pass
-            
-            logger.error("❌ 服务器配置 JSON 格式错误")
+            servers = parse_claude_mcp_config(claude_json)
+        except ClaudeConfigError as e:
+            logger.error(f"Claude mcpServers 配置解析失败: {e}")
             return []
+
+        # 保留未知字段（如 post_process）供旧功能使用
+        raw_mapping: Dict[str, Any] = {}
+        try:
+            parsed = json.loads(claude_json)
+            mapping = parsed.get("mcpServers", parsed)
+            if isinstance(mapping, dict):
+                raw_mapping = mapping
+        except Exception:
+            raw_mapping = {}
+
+        configs: List[Dict[str, Any]] = []
+        for srv in servers:
+            raw = raw_mapping.get(srv.name, {})
+            cfg: Dict[str, Any] = raw.copy() if isinstance(raw, dict) else {}
+            cfg.update(
+                {
+                    "name": srv.name,
+                    "enabled": srv.enabled,
+                    "transport": srv.transport,
+                    "command": srv.command,
+                    "args": srv.args,
+                    "env": srv.env,
+                    "url": srv.url,
+                    "headers": srv.headers,
+                }
+            )
+            configs.append(cfg)
+
+        return configs
     
     def _parse_server_config(self, conf: Dict) -> MCPServerConfig:
         """解析服务器配置字典"""
@@ -3985,8 +3485,6 @@ mcp_bing_*""",
     
     def _update_tool_list_display(self) -> None:
         """v1.4.0: 更新工具列表显示"""
-        import tomlkit
-        
         tools = mcp_manager.all_tools
         disabled_tools = self._get_disabled_tools()
         
@@ -4016,30 +3514,9 @@ mcp_bing_*""",
         if "tools" not in self.config:
             self.config["tools"] = {}
         self.config["tools"]["tool_list"] = tool_list_text
-        
-        # 写入配置文件
-        try:
-            config_path = Path(__file__).parent / "config.toml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    doc = tomlkit.load(f)
-                
-                if "tools" not in doc:
-                    doc["tools"] = tomlkit.table()
-                # 使用 tomlkit 多行字符串避免控制字符问题
-                from tomlkit.items import String, StringType, Trivia
-                ml_string = String(StringType.MLB, tool_list_text, tool_list_text, Trivia())
-                doc["tools"]["tool_list"] = ml_string
-                
-                with open(config_path, "w", encoding="utf-8") as f:
-                    tomlkit.dump(doc, f)
-        except Exception as e:
-            logger.warning(f"更新工具列表显示失败: {e}")
     
     def _update_status_display(self) -> None:
         """更新配置文件中的状态显示字段"""
-        import tomlkit
-        
         status = mcp_manager.get_status()
         settings = self.config.get("settings", {})
         lines = []
@@ -4082,24 +3559,6 @@ mcp_bing_*""",
         if "status" not in self.config:
             self.config["status"] = {}
         self.config["status"]["connection_status"] = status_text
-        
-        try:
-            config_path = Path(__file__).parent / "config.toml"
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    doc = tomlkit.load(f)
-                
-                if "status" not in doc:
-                    doc["status"] = tomlkit.table()
-                # 使用 tomlkit 多行字符串避免控制字符问题
-                from tomlkit.items import String, StringType, Trivia
-                ml_string = String(StringType.MLB, status_text, status_text, Trivia())
-                doc["status"]["connection_status"] = ml_string
-                
-                with open(config_path, "w", encoding="utf-8") as f:
-                    tomlkit.dump(doc, f)
-        except Exception as e:
-            logger.warning(f"更新配置文件状态失败: {e}")
     
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
         """返回插件的所有组件"""

@@ -1,4 +1,4 @@
-# MCP桥接插件 v1.7.0 - 配置文件示例
+# MCP桥接插件 v2.0.0 - 配置文件示例
 # 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
 # 
 # 使用方法：复制此文件为 config.toml，然后根据需要修改配置
@@ -29,8 +29,8 @@
 # ============================================================
 [plugin]
 name = "mcp_bridge_plugin"
-version = "1.7.0"
-config_version = "1.7.0"
+version = "2.0.0"
+config_version = "2.0.0"
 enabled = false  # 默认禁用，在 WebUI 中启用
 
 # ============================================================
@@ -200,60 +200,54 @@ perm_rules = "[]"
 # 🔌 MCP 服务器配置
 # ============================================================
 #
-# ⚠️ 重要：JSON 格式说明
+# ⚠️ 重要：配置格式（Claude Desktop 规范）
 # ────────────────────────────────────────────────────────────
-# 服务器列表必须是 JSON 数组格式！
+# v2.0 起统一使用 Claude Desktop 的 mcpServers JSON。
 #
-# ❌ 错误写法：
-#    { "name": "server1", ... },
-#    { "name": "server2", ... }
+# claude_config_json 的内容应为 JSON 对象：
+# {
+#   "mcpServers": {
+#     "server_name": { ...server config... },
+#     "another": { ... }
+#   }
+# }
 #
-# ✅ 正确写法：
-#    [
-#      { "name": "server1", ... },
-#      { "name": "server2", ... }
-#    ]
-#
-# ────────────────────────────────────────────────────────────
-# 每个服务器的配置字段：
-#   name      - 服务器名称（唯一标识）
-#   enabled   - 是否启用 (true/false)
-#   transport - 传输方式: "stdio" / "sse" / "http" / "streamable_http"
-#   url       - 服务器地址（sse/http/streamable_http 模式必填）
-#   headers   - 🆕 鉴权头（可选，如 {"Authorization": "Bearer xxx"}）
-#   command   - 启动命令（stdio 模式，如 "npx" 或 "uvx"）
+# 每个服务器支持字段：
+#   transport - 传输方式: "stdio" / "sse" / "http" / "streamable_http"（可选）
+#   url       - 服务器地址（sse/http/streamable_http 模式）
+#   command   - 启动命令（stdio 模式，如 "npx" / "uvx"）
 #   args      - 命令参数数组（stdio 模式）
 #   env       - 环境变量对象（stdio 模式，可选）
+#   headers   - 鉴权头（可选，如 {"Authorization": "Bearer xxx"}）
+#   enabled   - 是否启用（可选，默认 true）
 #   post_process - 服务器级别后处理配置（可选）
 #
 # ============================================================
 
 [servers]
-list = '''
-[
-  {
-    "name": "time-mcp-server",
-    "enabled": false,
-    "transport": "streamable_http",
-    "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
-  },
-  {
-    "name": "my-auth-server",
-    "enabled": false,
-    "transport": "streamable_http",
-    "url": "https://mcp.api-inference.modelscope.net/xxxxxx/mcp",
-    "headers": {
-      "Authorization": "Bearer ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+claude_config_json = '''
+{
+  "mcpServers": {
+    "time-mcp-server": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
+    },
+    "my-auth-server": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/xxxxxx/mcp",
+      "headers": {
+        "Authorization": "Bearer ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      }
+    },
+    "fetch-local": {
+      "enabled": false,
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
     }
-  },
-  {
-    "name": "fetch-local",
-    "enabled": false,
-    "transport": "stdio",
-    "command": "uvx",
-    "args": ["mcp-server-fetch"]
   }
-]
+}
 '''
 
 # ============================================================
