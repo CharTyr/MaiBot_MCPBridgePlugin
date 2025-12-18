@@ -25,6 +25,60 @@
 # ============================================================
 
 # ============================================================
+# 🔌 MCP 服务器配置
+# ============================================================
+#
+# ⚠️ 重要：配置格式（Claude Desktop 规范）
+# ────────────────────────────────────────────────────────────
+# 统一使用 Claude Desktop 的 mcpServers JSON。
+#
+# claude_config_json 的内容应为 JSON 对象：
+# {
+#   "mcpServers": {
+#     "server_name": { ...server config... },
+#     "another": { ... }
+#   }
+# }
+#
+# 每个服务器支持字段：
+#   transport - 传输方式: "stdio" / "sse" / "http" / "streamable_http"（可选）
+#   url       - 服务器地址（sse/http/streamable_http 模式）
+#   command   - 启动命令（stdio 模式，如 "npx" / "uvx"）
+#   args      - 命令参数数组（stdio 模式）
+#   env       - 环境变量对象（stdio 模式，可选）
+#   headers   - 鉴权头（可选，如 {"Authorization": "Bearer xxx"}）
+#   enabled   - 是否启用（可选，默认 true）
+#   post_process - 服务器级别后处理配置（可选）
+#
+# ============================================================
+
+[servers]
+claude_config_json = '''
+{
+  "mcpServers": {
+    "time-mcp-server": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
+    },
+    "my-auth-server": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/xxxxxx/mcp",
+      "headers": {
+        "Authorization": "Bearer ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      }
+    },
+    "fetch-local": {
+      "enabled": false,
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}
+'''
+
+# ============================================================
 # 插件基本信息
 # ============================================================
 [plugin]
@@ -195,60 +249,6 @@ quick_allow_users = ""
 # ]
 # '''
 perm_rules = "[]"
-
-# ============================================================
-# 🔌 MCP 服务器配置
-# ============================================================
-#
-# ⚠️ 重要：配置格式（Claude Desktop 规范）
-# ────────────────────────────────────────────────────────────
-# 统一使用 Claude Desktop 的 mcpServers JSON。
-#
-# claude_config_json 的内容应为 JSON 对象：
-# {
-#   "mcpServers": {
-#     "server_name": { ...server config... },
-#     "another": { ... }
-#   }
-# }
-#
-# 每个服务器支持字段：
-#   transport - 传输方式: "stdio" / "sse" / "http" / "streamable_http"（可选）
-#   url       - 服务器地址（sse/http/streamable_http 模式）
-#   command   - 启动命令（stdio 模式，如 "npx" / "uvx"）
-#   args      - 命令参数数组（stdio 模式）
-#   env       - 环境变量对象（stdio 模式，可选）
-#   headers   - 鉴权头（可选，如 {"Authorization": "Bearer xxx"}）
-#   enabled   - 是否启用（可选，默认 true）
-#   post_process - 服务器级别后处理配置（可选）
-#
-# ============================================================
-
-[servers]
-claude_config_json = '''
-{
-  "mcpServers": {
-    "time-mcp-server": {
-      "enabled": false,
-      "transport": "streamable_http",
-      "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
-    },
-    "my-auth-server": {
-      "enabled": false,
-      "transport": "streamable_http",
-      "url": "https://mcp.api-inference.modelscope.net/xxxxxx/mcp",
-      "headers": {
-        "Authorization": "Bearer ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-      }
-    },
-    "fetch-local": {
-      "enabled": false,
-      "command": "uvx",
-      "args": ["mcp-server-fetch"]
-    }
-  }
-}
-'''
 
 # ============================================================
 # 状态显示（只读）
