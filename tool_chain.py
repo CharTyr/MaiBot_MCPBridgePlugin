@@ -320,7 +320,7 @@ class ToolChainExecutor:
             var_path: 变量路径，如 "input.query", "step.search_result", "prev", "prev.id"
             context: 上下文
         """
-        parts = var_path.split(".")
+        parts = self._parse_var_path(var_path)
         
         if not parts:
             return ""
@@ -335,20 +335,18 @@ class ToolChainExecutor:
         
         # 遍历路径
         for part in parts[1:]:
+            if isinstance(value, str):
+                parsed = self._try_parse_json(value)
+                if parsed is not None:
+                    value = parsed
+
             if isinstance(value, dict):
                 value = value.get(part, "")
-            elif isinstance(value, str):
-                # 尝试解析为 JSON
-                try:
-                    parsed = json.loads(value)
-                    if isinstance(parsed, dict):
-                        value = parsed.get(part, "")
-                    elif isinstance(parsed, list) and part.isdigit():
-                        idx = int(part)
-                        value = parsed[idx] if 0 <= idx < len(parsed) else ""
-                    else:
-                        value = ""
-                except json.JSONDecodeError:
+            elif isinstance(value, list):
+                if part.isdigit():
+                    idx = int(part)
+                    value = value[idx] if 0 <= idx < len(value) else ""
+                else:
                     value = ""
             else:
                 value = ""
@@ -356,7 +354,97 @@ class ToolChainExecutor:
         # 确保返回字符串
         if isinstance(value, (dict, list)):
             return json.dumps(value, ensure_ascii=False)
-        return str(value) if value else ""
+        if value is None:
+            return ""
+        if value == "":
+            return ""
+        return str(value)
+
+    def _try_parse_json(self, value: str) -> Optional[Any]:
+        """尝试将字符串解析为 JSON 对象，失败则返回 None。"""
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+
+    def _parse_var_path(self, var_path: str) -> List[str]:
+        """解析变量路径，支持点号与下标写法。
+
+        支持:
+        - step.geo.return.0.location
+        - step.geo.return[0].location
+        - step.geo['return'][0]['location']
+        """
+        if not var_path:
+            return []
+
+        tokens: List[str] = []
+        buf: List[str] = []
+        in_bracket = False
+        in_quote = False
+        quote_char = ""
+
+        def flush_buf() -> None:
+            if buf:
+                token = "".join(buf).strip()
+                if token:
+                    tokens.append(token)
+                buf.clear()
+
+        i = 0
+        while i < len(var_path):
+            ch = var_path[i]
+
+            if not in_bracket and ch == ".":
+                flush_buf()
+                i += 1
+                continue
+
+            if not in_bracket and ch == "[":
+                flush_buf()
+                in_bracket = True
+                in_quote = False
+                quote_char = ""
+                i += 1
+                continue
+
+            if in_bracket and not in_quote and ch == "]":
+                flush_buf()
+                in_bracket = False
+                i += 1
+                continue
+
+            if in_bracket and ch in ("'", '"'):
+                if not in_quote:
+                    in_quote = True
+                    quote_char = ch
+                    i += 1
+                    continue
+                if quote_char == ch:
+                    in_quote = False
+                    quote_char = ""
+                    i += 1
+                    continue
+
+            if in_bracket and not in_quote:
+                if ch.isspace():
+                    i += 1
+                    continue
+                if ch == ",":
+                    i += 1
+                    continue
+
+            buf.append(ch)
+            i += 1
+
+        flush_buf()
+
+        if in_bracket or in_quote:
+            return [p for p in var_path.split(".") if p]
+
+        return tokens
 
 
 class ToolChainManager:
