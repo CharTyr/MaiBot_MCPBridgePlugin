@@ -2047,13 +2047,13 @@ class MCPBridgePlugin(BasePlugin):
     config_section_descriptions = {
         "guide": section_meta("📖 快速入门", order=1),
         "plugin": section_meta("🔘 插件开关", order=2),
-        "servers": section_meta("🔌 MCP Servers（Claude）", order=4),
-        "status": section_meta("📊 运行状态", order=5),
-        "settings": section_meta("⚙️ 高级设置", collapsed=True, order=10),
-        "tools": section_meta("🔧 工具管理", collapsed=True, order=11),
-        "tool_chains": section_meta("🔗 Workflow (硬流程)", collapsed=True, order=12),
-        "react": section_meta("🔄 ReAct (软流程)", collapsed=True, order=13),
-        "permissions": section_meta("🔐 权限控制", collapsed=True, order=20),
+        "servers": section_meta("🔌 MCP Servers（Claude）", order=3),
+        "tool_chains": section_meta("🔗 Workflow（硬流程/工具链）", order=4),
+        "react": section_meta("🔄 ReAct（软流程）", collapsed=True, order=5),
+        "status": section_meta("📊 运行状态", order=10),
+        "tools": section_meta("🔧 工具管理", collapsed=True, order=20),
+        "permissions": section_meta("🔐 权限控制", collapsed=True, order=21),
+        "settings": section_meta("⚙️ 高级设置", collapsed=True, order=30),
     }
     
     config_schema: dict = {
@@ -2061,7 +2061,7 @@ class MCPBridgePlugin(BasePlugin):
         "guide": {
             "quick_start": ConfigField(
                 type=str,
-                default="1. 从下方链接获取 MCP 服务器  2. 在「MCP Servers（Claude）」粘贴 mcpServers 配置  3. 保存后发送 /mcp reconnect",
+                default="1. 获取 MCP 服务器  2. 在「MCP Servers（Claude）」粘贴 mcpServers 配置  3. 保存后发送 /mcp reconnect  4. （可选）在「Workflow/ ReAct」配置流程",
                 description="三步开始使用",
                 label="🚀 快速入门",
                 disabled=True,
@@ -2387,6 +2387,8 @@ class MCPBridgePlugin(BasePlugin):
   ${step.输出键}   - 某步骤的输出（需设置 output_key）
   ${prev}         - 上一步的输出
   ${prev.字段}    - 上一步输出(JSON)的某字段
+  ${step.输出键.0.字段} / ${step.输出键[0].字段} - 访问数组下标
+  ${step.输出键['return'][0]['location']}       - 支持 bracket 写法
 
 📌 测试命令:
   /mcp chain list          - 查看所有工具链
@@ -2435,8 +2437,8 @@ class MCPBridgePlugin(BasePlugin):
                 label="➕ 快速添加 - 执行步骤",
                 input_type="textarea",
                 rows=5,
-                placeholder='mcp_server_search|{"keyword":"${input.query}"}|search_result\nmcp_server_detail|{"id":"${prev}"}|',
-                hint="格式: 工具名|参数模板|输出键（输出键可选）",
+                placeholder='mcp_server_search|{"keyword":"${input.query}"}|search_result\nmcp_server_detail|{"id":"${prev}"}|\n# 访问数组示例:\n# mcp_geo|{"q":"${input.query}"}|geo\n# mcp_next|{"location":"${step.geo.return.0.location}"}|',
+                hint="格式: 工具名|参数模板|输出键（输出键可选，用于后续步骤引用 ${step.xxx}）",
                 order=13,
             ),
             "quick_chain_add": ConfigField(
@@ -2995,12 +2997,51 @@ mcp_bing_*""",
         self._process_quick_add_chain()
         
         chains_config = self.config.get("tool_chains", {})
-        
+        if not isinstance(chains_config, dict):
+            chains_config = {}
+
+        # 兼容旧版本：部分版本可能使用 tool_chain 或其他字段名
+        if not chains_config:
+            legacy_section = self.config.get("tool_chain")
+            if isinstance(legacy_section, dict):
+                chains_config = legacy_section
+                self.config["tool_chains"] = legacy_section
+
+        # 兼容旧版本：chains_list 字段名变化
+        chains_json = str(chains_config.get("chains_list", "") or "")
+        if not chains_json.strip():
+            for legacy_key in ("list", "chains", "workflow_list", "workflows", "toolchains"):
+                legacy_val = chains_config.get(legacy_key)
+                if legacy_val is None:
+                    continue
+
+                if isinstance(legacy_val, str) and legacy_val.strip():
+                    chains_json = legacy_val
+                    break
+
+                if isinstance(legacy_val, list):
+                    chains_json = json.dumps(legacy_val, ensure_ascii=False, indent=2)
+                    break
+
+                if isinstance(legacy_val, dict):
+                    chains_json = json.dumps([legacy_val], ensure_ascii=False, indent=2)
+                    break
+
+            if chains_json.strip():
+                if "tool_chains" not in self.config or not isinstance(self.config.get("tool_chains"), dict):
+                    self.config["tool_chains"] = {}
+                self.config["tool_chains"]["chains_list"] = chains_json
+                logger.info("检测到旧版 Workflow 配置字段，已自动迁移为 tool_chains.chains_list（请在 WebUI 保存一次以固化）")
+
+        chains_config = self.config.get("tool_chains", {})
+        if not isinstance(chains_config, dict):
+            chains_config = {}
+
         if not chains_config.get("chains_enabled", True):
             logger.info("工具链功能已禁用")
             return
         
-        chains_json = chains_config.get("chains_list", "[]")
+        chains_json = str(chains_config.get("chains_list", "[]") or "")
         if not chains_json or not chains_json.strip():
             return
         

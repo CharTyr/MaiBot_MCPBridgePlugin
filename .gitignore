@@ -16,6 +16,9 @@ __pycache__/
 *$py.class
 *.so
 
+# 本地测试脚本（仓库不提交）
+test_*.py
+
 # IDE
 .idea/
 .vscode/

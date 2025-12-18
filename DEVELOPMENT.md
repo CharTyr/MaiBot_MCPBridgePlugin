@@ -96,6 +96,8 @@ result = await tool_chain_manager.execute_chain("search_and_detail", {"query": "
 - `${step.输出键}`: 指定步骤的输出
 - `${prev}`: 上一步输出
 - `${prev.字段}`: 上一步输出（JSON）的字段
+- `${step.geo.return.0.location}` / `${step.geo.return[0].location}`: 数组下标访问
+- `${step.geo['return'][0]['location']}`: bracket 写法（最通用）
 
 ## 双轨制架构
 
@@ -136,6 +138,16 @@ def _register_tool_chains(self) -> None:
 ```
 
 ## 配置系统
+
+### MCP 服务器配置（Claude Desktop 规范）
+
+插件只接受 Claude Desktop 的 `mcpServers` JSON（见 `core/claude_config.py`）。配置入口统一为：
+
+- WebUI/配置文件：`[servers].claude_config_json`
+- 命令：`/mcp import`（合并 `mcpServers`）与 `/mcp export`（导出当前 `mcpServers`）
+
+兼容迁移：
+- 若检测到旧版 `servers.list`，会自动迁移为 `servers.claude_config_json`（仅迁移到内存配置，需 WebUI 保存一次固化）。
 
 ### WebUI 配置 Schema
 
@@ -194,7 +206,7 @@ class MCPStopHandler(BaseEventHandler):
     handler_name = "mcp_stop"
     
     async def execute(self, message):
-        await mcp_manager.close_all()
+        await mcp_manager.shutdown()
         return (True, True, None, None, None)
 ```
 
@@ -335,11 +347,10 @@ logger.error("错误")
 /mcp chain              # 查看工具链
 ```
 
-## 版本历史
+## 更新日志
 
-- **v1.9.0**: 双轨制架构（ReAct + Workflow）
-- **v1.8.x**: 工具链支持
-- **v1.7.0**: 断路器模式
-- **v1.6.0**: 配置导入导出
-- **v1.5.x**: 并行连接、快速添加
-- **v1.4.0**: 追踪、缓存、权限
+见 `plugins/MaiBot_MCPBridgePlugin/CHANGELOG.md`
+
+## 开发约定
+
+- 本仓库不提交测试脚本/临时复现文件；如需本地验证，可自行在工作区创建未跟踪文件（建议放到 `.local/` 并加入 `.gitignore`）。

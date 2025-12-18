@@ -88,7 +88,59 @@ config_version = "2.0.0"
 enabled = false  # 默认禁用，在 WebUI 中启用
 
 # ============================================================
-# 全局设置
+# Workflow（硬流程/工具链）
+# ============================================================
+#
+# 作用：把多个工具按顺序执行；后续步骤可引用前序输出。
+#
+# ✅ 推荐配置方式：WebUI「Workflow（硬流程/工具链）」里用“快速添加”表单。
+# ✅ 也可以直接写 chains_list（JSON 数组）。
+#
+# 变量替换：
+#   ${input.xxx}                     - 用户输入
+#   ${step.<output_key>}             - 指定步骤输出（需设置 output_key）
+#   ${prev}                          - 上一步输出
+#   ${prev.字段}                     - 上一步输出（JSON）的字段
+#   ${step.geo.return.0.location}    - 数组/下标访问（dot）
+#   ${step.geo.return[0].location}   - 数组/下标访问（[]）
+#   ${step.geo['return'][0]['location']} - bracket 写法
+#
+# ============================================================
+
+[tool_chains]
+chains_enabled = true
+
+chains_list = '''
+[
+  {
+    "name": "search_and_detail",
+    "description": "先搜索，再根据结果获取详情",
+    "input_params": { "query": "搜索关键词" },
+    "steps": [
+      { "tool_name": "把这里替换成你的搜索工具名", "args_template": { "keyword": "${input.query}" }, "output_key": "search" },
+      { "tool_name": "把这里替换成你的详情工具名", "args_template": { "id": "${prev}" } }
+    ]
+  }
+]
+'''
+
+# ============================================================
+# ReAct（软流程）
+# ============================================================
+#
+# 作用：把 MCP 工具注册到 MaiBot 的 ReAct 系统，LLM 可自主多轮调用。
+#
+# 注意：ReAct 适合“探索式/不确定”场景；Workflow 适合“固定/可控”场景。
+#
+# ============================================================
+
+[react]
+react_enabled = false
+filter_mode = "whitelist"  # whitelist / blacklist
+tool_filter = ""           # 每行一个工具名，支持通配符 *
+
+# ============================================================
+# 全局设置（高级设置建议保持默认）
 # ============================================================
 [settings]
 # 🏷️ 工具前缀 - 用于区分 MCP 工具和原生工具
@@ -141,13 +193,13 @@ post_process_enabled = false
 # 📏 后处理阈值（字符数）- 结果长度超过此值才触发后处理
 post_process_threshold = 500
 
-# � 后处理输e出限制 - LLM 摘要输出的最大 token 数
+# 🔢 后处理输出限制 - LLM 摘要输出的最大 token 数
 post_process_max_tokens = 500
 
 # 🤖 后处理模型（可选）- 留空则使用 utils 模型组
 post_process_model = ""
 
-# � 后处理提示词模板-
+# 🧠 后处理提示词模板
 post_process_prompt = '''用户问题：{query}
 
 工具返回内容：
@@ -184,7 +236,7 @@ cache_ttl = 300
 # 📦 最大缓存条目 - 超出后 LRU 淘汰
 cache_max_entries = 200
 
-# � 缓存排除列表 - 即不缓存的工具（每行一个，支持通配符 *）
+# 🚫 缓存排除列表 - 即不缓存的工具（每行一个，支持通配符 *）
 # 时间类、随机类工具建议排除
 cache_exclude_tools = '''
 mcp_*_time_*
