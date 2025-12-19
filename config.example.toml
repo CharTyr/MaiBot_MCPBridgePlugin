@@ -1,4 +1,4 @@
-# MCP桥接插件 v1.7.0 - 配置文件示例
+# MCP桥接插件 - 配置文件示例
 # 将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot
 # 
 # 使用方法：复制此文件为 config.toml，然后根据需要修改配置
@@ -25,16 +25,122 @@
 # ============================================================
 
 # ============================================================
+# 🔌 MCP 服务器配置
+# ============================================================
+#
+# ⚠️ 重要：配置格式（Claude Desktop 规范）
+# ────────────────────────────────────────────────────────────
+# 统一使用 Claude Desktop 的 mcpServers JSON。
+#
+# claude_config_json 的内容应为 JSON 对象：
+# {
+#   "mcpServers": {
+#     "server_name": { ...server config... },
+#     "another": { ... }
+#   }
+# }
+#
+# 每个服务器支持字段：
+#   transport - 传输方式: "stdio" / "sse" / "http" / "streamable_http"（可选）
+#   url       - 服务器地址（sse/http/streamable_http 模式）
+#   command   - 启动命令（stdio 模式，如 "npx" / "uvx"）
+#   args      - 命令参数数组（stdio 模式）
+#   env       - 环境变量对象（stdio 模式，可选）
+#   headers   - 鉴权头（可选，如 {"Authorization": "Bearer xxx"}）
+#   enabled   - 是否启用（可选，默认 true）
+#   post_process - 服务器级别后处理配置（可选）
+#
+# ============================================================
+
+[servers]
+claude_config_json = '''
+{
+  "mcpServers": {
+    "time-mcp-server": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
+    },
+    "my-auth-server": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/xxxxxx/mcp",
+      "headers": {
+        "Authorization": "Bearer ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      }
+    },
+    "fetch-local": {
+      "enabled": false,
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}
+'''
+
+# ============================================================
 # 插件基本信息
 # ============================================================
 [plugin]
 name = "mcp_bridge_plugin"
-version = "1.7.0"
-config_version = "1.7.0"
+version = "2.0.0"
+config_version = "2.0.0"
 enabled = false  # 默认禁用，在 WebUI 中启用
 
 # ============================================================
-# 全局设置
+# Workflow（硬流程/工具链）
+# ============================================================
+#
+# 作用：把多个工具按顺序执行；后续步骤可引用前序输出。
+#
+# ✅ 推荐配置方式：WebUI「Workflow（硬流程/工具链）」里用“快速添加”表单。
+# ✅ 也可以直接写 chains_list（JSON 数组）。
+#
+# 变量替换：
+#   ${input.xxx}                     - 用户输入
+#   ${step.<output_key>}             - 指定步骤输出（需设置 output_key）
+#   ${prev}                          - 上一步输出
+#   ${prev.字段}                     - 上一步输出（JSON）的字段
+#   ${step.geo.return.0.location}    - 数组/下标访问（dot）
+#   ${step.geo.return[0].location}   - 数组/下标访问（[]）
+#   ${step.geo['return'][0]['location']} - bracket 写法
+#
+# ============================================================
+
+[tool_chains]
+chains_enabled = true
+
+chains_list = '''
+[
+  {
+    "name": "search_and_detail",
+    "description": "先搜索，再根据结果获取详情",
+    "input_params": { "query": "搜索关键词" },
+    "steps": [
+      { "tool_name": "把这里替换成你的搜索工具名", "args_template": { "keyword": "${input.query}" }, "output_key": "search" },
+      { "tool_name": "把这里替换成你的详情工具名", "args_template": { "id": "${prev}" } }
+    ]
+  }
+]
+'''
+
+# ============================================================
+# ReAct（软流程）
+# ============================================================
+#
+# 作用：把 MCP 工具注册到 MaiBot 的 ReAct 系统，LLM 可自主多轮调用。
+#
+# 注意：ReAct 适合“探索式/不确定”场景；Workflow 适合“固定/可控”场景。
+#
+# ============================================================
+
+[react]
+react_enabled = false
+filter_mode = "whitelist"  # whitelist / blacklist
+tool_filter = ""           # 每行一个工具名，支持通配符 *
+
+# ============================================================
+# 全局设置（高级设置建议保持默认）
 # ============================================================
 [settings]
 # 🏷️ 工具前缀 - 用于区分 MCP 工具和原生工具
@@ -68,7 +174,7 @@ auto_reconnect = true
 max_reconnect_attempts = 3
 
 # ============================================================
-# v1.2.0 高级功能（实验性）
+# 高级功能（实验性）
 # ============================================================
 # 📦 启用 Resources - 允许读取 MCP 服务器提供的资源
 enable_resources = false
@@ -77,7 +183,7 @@ enable_resources = false
 enable_prompts = false
 
 # ============================================================
-# v1.3.0 结果后处理功能
+# 结果后处理功能
 # ============================================================
 # 当 MCP 工具返回的内容过长时，使用 LLM 对结果进行摘要提炼
 
@@ -87,13 +193,13 @@ post_process_enabled = false
 # 📏 后处理阈值（字符数）- 结果长度超过此值才触发后处理
 post_process_threshold = 500
 
-# � 后处理输e出限制 - LLM 摘要输出的最大 token 数
+# 🔢 后处理输出限制 - LLM 摘要输出的最大 token 数
 post_process_max_tokens = 500
 
 # 🤖 后处理模型（可选）- 留空则使用 utils 模型组
 post_process_model = ""
 
-# � 后处理提示词模板-
+# 🧠 后处理提示词模板
 post_process_prompt = '''用户问题：{query}
 
 工具返回内容：
@@ -102,7 +208,7 @@ post_process_prompt = '''用户问题：{query}
 请从上述内容中提取与用户问题最相关的关键信息，简洁准确地输出：'''
 
 # ============================================================
-# 🆕 v1.4.0 调用链路追踪
+# 调用链路追踪
 # ============================================================
 # 记录工具调用详情，便于调试和分析
 
@@ -117,7 +223,7 @@ trace_max_records = 50
 trace_log_enabled = false
 
 # ============================================================
-# 🆕 v1.4.0 工具调用缓存
+# 工具调用缓存
 # ============================================================
 # 缓存相同参数的调用结果，减少重复请求
 
@@ -130,7 +236,7 @@ cache_ttl = 300
 # 📦 最大缓存条目 - 超出后 LRU 淘汰
 cache_max_entries = 200
 
-# � 缓存排除列表 - 即不缓存的工具（每行一个，支持通配符 *）
+# 🚫 缓存排除列表 - 即不缓存的工具（每行一个，支持通配符 *）
 # 时间类、随机类工具建议排除
 cache_exclude_tools = '''
 mcp_*_time_*
@@ -138,7 +244,7 @@ mcp_*_random_*
 '''
 
 # ============================================================
-# 🆕 v1.4.0 工具管理
+# 工具管理
 # ============================================================
 [tools]
 # 📋 工具清单（只读）- 启动后自动生成
@@ -154,7 +260,7 @@ tool_list = "(启动后自动生成)"
 disabled_tools = ""
 
 # ============================================================
-# 🆕 v1.4.0 权限控制
+# 权限控制
 # ============================================================
 [permissions]
 # 🔐 启用权限控制 - 按群/用户限制工具使用
@@ -195,66 +301,6 @@ quick_allow_users = ""
 # ]
 # '''
 perm_rules = "[]"
-
-# ============================================================
-# 🔌 MCP 服务器配置
-# ============================================================
-#
-# ⚠️ 重要：JSON 格式说明
-# ────────────────────────────────────────────────────────────
-# 服务器列表必须是 JSON 数组格式！
-#
-# ❌ 错误写法：
-#    { "name": "server1", ... },
-#    { "name": "server2", ... }
-#
-# ✅ 正确写法：
-#    [
-#      { "name": "server1", ... },
-#      { "name": "server2", ... }
-#    ]
-#
-# ────────────────────────────────────────────────────────────
-# 每个服务器的配置字段：
-#   name      - 服务器名称（唯一标识）
-#   enabled   - 是否启用 (true/false)
-#   transport - 传输方式: "stdio" / "sse" / "http" / "streamable_http"
-#   url       - 服务器地址（sse/http/streamable_http 模式必填）
-#   headers   - 🆕 鉴权头（可选，如 {"Authorization": "Bearer xxx"}）
-#   command   - 启动命令（stdio 模式，如 "npx" 或 "uvx"）
-#   args      - 命令参数数组（stdio 模式）
-#   env       - 环境变量对象（stdio 模式，可选）
-#   post_process - 服务器级别后处理配置（可选）
-#
-# ============================================================
-
-[servers]
-list = '''
-[
-  {
-    "name": "time-mcp-server",
-    "enabled": false,
-    "transport": "streamable_http",
-    "url": "https://mcp.api-inference.modelscope.cn/server/mcp-server-time"
-  },
-  {
-    "name": "my-auth-server",
-    "enabled": false,
-    "transport": "streamable_http",
-    "url": "https://mcp.api-inference.modelscope.net/xxxxxx/mcp",
-    "headers": {
-      "Authorization": "Bearer ms-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-    }
-  },
-  {
-    "name": "fetch-local",
-    "enabled": false,
-    "transport": "stdio",
-    "command": "uvx",
-    "args": ["mcp-server-fetch"]
-  }
-]
-'''
 
 # ============================================================
 # 状态显示（只读）

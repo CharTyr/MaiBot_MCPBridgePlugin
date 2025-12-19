@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "MCP桥接插件",
-  "version": "1.7.0",
+  "version": "2.0.0",
   "description": "将 MCP (Model Context Protocol) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具",
   "author": {
     "name": "CharTyr",
@@ -26,7 +26,10 @@
     "permissions",
     "import",
     "export",
-    "claude-desktop"
+    "claude-desktop",
+    "workflow",
+    "react",
+    "agent"
   ],
   "categories": [
     "工具扩展",
@@ -51,9 +54,13 @@
       "调用链路追踪",
       "工具调用缓存（LRU）",
       "工具权限控制（群/用户级别）",
-      "配置导入导出（Claude Desktop / Kiro 格式）",
+      "配置导入导出（Claude Desktop mcpServers）",
       "断路器模式（故障快速失败）",
-      "状态实时刷新"
+      "状态实时刷新",
+      "Workflow 硬流程（顺序执行多个工具）",
+      "Workflow 快速添加（表单式配置）",
+      "ReAct 软流程（LLM 自主多轮调用）",
+      "双轨制架构（软流程 + 硬流程）"
     ]
   },
   "id": "MaiBot Community.MCPBridgePlugin"
