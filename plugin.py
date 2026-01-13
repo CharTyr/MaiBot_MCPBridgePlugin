@@ -1645,7 +1645,12 @@ class MCPStatusCommand(BaseCommand):
             if _plugin_instance:
                 _plugin_instance._load_tool_chains()
                 chains = tool_chain_manager.get_all_chains()
-                registered = len(tool_chain_registry._tool_classes)
+                from src.plugin_system.core.component_registry import component_registry
+                registered = 0
+                for name, chain in tool_chain_manager.get_enabled_chains().items():
+                    tool_name = f"chain_{name}".replace("-", "_").replace(".", "_")
+                    if component_registry.get_component_info(tool_name, ComponentType.TOOL):
+                        registered += 1
                 lines = [f"✅ 已重新加载工具链配置"]
                 lines.append(f"📋 配置数: {len(chains)} 个")
                 lines.append(f"🔧 已注册: {registered} 个（可被 LLM 调用）")
@@ -2815,6 +2820,8 @@ mcp_bing_*""",
         self._initialized = False
         self._status_refresh_running = False
         self._status_refresh_task: Optional[asyncio.Task] = None
+        self._last_persisted_display_hash: str = ""
+        self._last_servers_config_error: str = ""
         _plugin_instance = self
         
         # 配置 MCP 管理器
@@ -2856,6 +2863,26 @@ mcp_bing_*""",
         # v1.8.0: 初始化工具链管理器
         tool_chain_manager.set_executor(mcp_manager)
         self._load_tool_chains()
+
+    def _persist_runtime_displays(self) -> None:
+        """将 WebUI 只读展示字段写回配置文件，使 WebUI 能正确显示运行状态。"""
+        try:
+            config_path = Path(self.plugin_dir) / self.config_file_name
+
+            payload = {
+                "status.connection_status": str(self.config.get("status", {}).get("connection_status", "") or ""),
+                "tools.tool_list": str(self.config.get("tools", {}).get("tool_list", "") or ""),
+                "tool_chains.chains_status": str(self.config.get("tool_chains", {}).get("chains_status", "") or ""),
+                "react.react_status": str(self.config.get("react", {}).get("react_status", "") or ""),
+            }
+            digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
+            if digest == self._last_persisted_display_hash:
+                return
+
+            self._save_config_to_file(self.config, str(config_path))
+            self._last_persisted_display_hash = digest
+        except Exception as e:
+            logger.debug(f"写回运行状态到配置文件失败: {e}")
     
     def _process_quick_add_chain(self) -> None:
         """v1.8.0: 处理快速添加工具链表单"""
@@ -3069,14 +3096,20 @@ mcp_bing_*""",
         chain_count = 0
         for chain_name, chain in tool_chain_manager.get_enabled_chains().items():
             try:
+                expected_tool_name = f"chain_{chain.name}".replace("-", "_").replace(".", "_")
+                if component_registry.get_component_info(expected_tool_name, ComponentType.TOOL):
+                    chain_count += 1
+                    logger.debug(f"🔗 工具链已存在，跳过重复注册: {expected_tool_name}")
+                    continue
+
                 info, tool_class = tool_chain_registry.register_chain(chain)
                 info.plugin_name = self.plugin_name
-                
+
                 if component_registry.register_component(info, tool_class):
                     chain_count += 1
                     logger.info(f"🔗 注册工具链: {tool_class.name}")
                 else:
-                    logger.warning(f"❌ 注册工具链失败: {tool_class.name}")
+                    logger.warning(f"⚠️ 工具链注册被跳过（可能已存在）: {tool_class.name}")
             except Exception as e:
                 logger.error(f"注册工具链 {chain_name} 失败: {e}")
         
@@ -3271,12 +3304,22 @@ mcp_bing_*""",
         if not servers_config:
             logger.warning("未配置任何 MCP 服务器")
             self._initialized = True
+            self._update_status_display()
+            self._update_tool_list_display()
+            self._update_chains_status_display()
+            self._start_status_refresher()
+            self._persist_runtime_displays()
             return
         
         auto_connect = settings.get("auto_connect", True)
         if not auto_connect:
             logger.info("auto_connect 已禁用，跳过自动连接")
             self._initialized = True
+            self._update_status_display()
+            self._update_tool_list_display()
+            self._update_chains_status_display()
+            self._start_status_refresher()
+            self._persist_runtime_displays()
             return
         
         tool_prefix = settings.get("tool_prefix", "mcp")
@@ -3302,6 +3345,11 @@ mcp_bing_*""",
         if not enabled_configs:
             logger.warning("没有已启用的 MCP 服务器")
             self._initialized = True
+            self._update_status_display()
+            self._update_tool_list_display()
+            self._update_chains_status_display()
+            self._start_status_refresher()
+            self._persist_runtime_displays()
             return
         
         logger.info(f"准备并行连接 {len(enabled_configs)} 个 MCP 服务器")
@@ -3376,12 +3424,9 @@ mcp_bing_*""",
             else:
                 logger.warning(f"❌ 注册 MCP 工具失败: {tool_class.name}")
         
-        # v1.8.0: 注册工具链为组合工具（使用统一方法）
         chains_config = self.config.get("tool_chains", {})
-        if chains_config.get("chains_enabled", True):
-            self._register_tool_chains()
-        
-        chain_count = len(tool_chain_registry._tool_classes)
+        chains_enabled = bool(chains_config.get("chains_enabled", True)) if isinstance(chains_config, dict) else True
+        chain_count = len(tool_chain_manager.get_enabled_chains()) if chains_enabled else 0
         
         # v1.9.0: 注册 MCP 工具到记忆检索 ReAct 系统（软流程）
         react_count = 0
@@ -3397,6 +3442,7 @@ mcp_bing_*""",
         self._update_tool_list_display()
         self._update_chains_status_display()
         self._start_status_refresher()
+        self._persist_runtime_displays()
     
     def _start_status_refresher(self) -> None:
         """启动 WebUI 状态刷新任务（不写入磁盘）"""
@@ -3432,6 +3478,7 @@ mcp_bing_*""",
                     self._update_status_display()
                     self._update_tool_list_display()
                     self._update_chains_status_display()
+                    self._persist_runtime_displays()
 
                 await asyncio.sleep(interval if enabled else 5.0)
             except asyncio.CancelledError:
@@ -3463,13 +3510,21 @@ mcp_bing_*""",
                 logger.info("检测到旧版 servers.list，已自动迁移为 Claude mcpServers（请在 WebUI 保存一次以固化）")
 
         if not claude_json.strip():
+            self._last_servers_config_error = "未配置任何 MCP 服务器（请在 WebUI 的「MCP Servers（Claude）」粘贴 mcpServers JSON）"
             return []
 
         try:
             servers = parse_claude_mcp_config(claude_json)
         except ClaudeConfigError as e:
+            self._last_servers_config_error = str(e)
             logger.error(f"Claude mcpServers 配置解析失败: {e}")
             return []
+        except Exception as e:
+            self._last_servers_config_error = str(e)
+            logger.error(f"Claude mcpServers 配置解析异常: {e}")
+            return []
+
+        self._last_servers_config_error = ""
 
         # 保留未知字段（如 post_process）供旧功能使用
         raw_mapping: Dict[str, Any] = {}
@@ -3561,6 +3616,11 @@ mcp_bing_*""",
         status = mcp_manager.get_status()
         settings = self.config.get("settings", {})
         lines = []
+
+        cfg_err = str(getattr(self, "_last_servers_config_error", "") or "").strip()
+        if cfg_err:
+            lines.append(f"⚠️ 配置: {cfg_err}")
+            lines.append("")
         
         lines.append(f"服务器: {status['connected_servers']}/{status['total_servers']} 已连接")
         lines.append(f"工具数: {status['total_tools']}")
