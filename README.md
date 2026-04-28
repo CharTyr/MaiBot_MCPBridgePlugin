@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/chartyr-maibot-mcpbridgeplugin-badge.png)](https://mseep.ai/app/chartyr-maibot-mcpbridgeplugin)
+
 # MCP 桥接插件
 
 将 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具。
