@@ -1,3 +1,5 @@
+#该插件的主要代码已加入MaiBot主程序中，当前仓库不再更新
+
 # MCP 桥接插件
 
 将 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) 服务器的工具桥接到 MaiBot，使麦麦能够调用外部 MCP 工具。
